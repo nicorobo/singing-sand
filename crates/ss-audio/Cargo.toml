@@ -1,0 +1,16 @@
+[package]
+name    = "ss-audio"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ss-core  = { path = "../ss-core" }
+# audio output — use symphonia as the decoder backend
+rodio    = { version = "0.20", default-features = false, features = ["symphonia-all"] }
+# direct symphonia access for waveform analysis and seek
+symphonia = { version = "0.5", features = ["all"] }
+# cross-thread channels with async recv support
+flume             = "0.11"
+crossbeam-channel = "0.5"
+anyhow   = { workspace = true }
+tracing  = { workspace = true }
