@@ -5,5 +5,9 @@ edition = "2021"
 
 [dependencies]
 ss-core = { path = "../ss-core" }
+ss-db   = { path = "../ss-db" }
 anyhow  = { workspace = true }
 tracing = { workspace = true }
+tokio   = { workspace = true }
+walkdir = { workspace = true }
+lofty   = { workspace = true }

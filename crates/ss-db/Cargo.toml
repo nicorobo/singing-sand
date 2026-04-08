@@ -7,3 +7,8 @@ edition = "2021"
 ss-core   = { path = "../ss-core" }
 anyhow    = { workspace = true }
 tracing   = { workspace = true }
+sqlx      = { workspace = true }
+tokio     = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

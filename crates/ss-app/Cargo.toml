@@ -8,9 +8,17 @@ name = "singing-sand"
 path = "src/main.rs"
 
 [dependencies]
-ss-core   = { path = "../ss-core" }
-ss-audio  = { path = "../ss-audio" }
-anyhow    = { workspace = true }
-flume     = { workspace = true }
-tracing   = { workspace = true }
+ss-core    = { path = "../ss-core" }
+ss-audio   = { path = "../ss-audio" }
+ss-db      = { path = "../ss-db" }
+ss-library = { path = "../ss-library" }
+anyhow     = { workspace = true }
+image      = { workspace = true }
+flume      = { workspace = true }
+tokio      = { workspace = true }
+tracing    = { workspace = true }
 tracing-subscriber = { workspace = true }
+slint      = { workspace = true }
+
+[build-dependencies]
+slint-build = "1"

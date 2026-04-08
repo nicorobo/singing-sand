@@ -23,3 +23,12 @@ postcard     = { version = "1.1", features = ["alloc"] }
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 flume              = "0.11"
+# database
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate"] }
+# library scanning
+walkdir = "2"
+lofty   = "0.22"
+# image decoding
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# GUI
+slint = "1"

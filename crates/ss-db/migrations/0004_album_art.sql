@@ -1,0 +1,4 @@
+CREATE TABLE IF NOT EXISTS album_art (
+    track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+    data     BLOB NOT NULL
+);
