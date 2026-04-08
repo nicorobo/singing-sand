@@ -31,6 +31,6 @@ pub struct ViewPort {
 
 impl Default for ViewPort {
     fn default() -> Self {
-        Self { width: 1000, height: 96, start_pct: 0.0, end_pct: 1.0 }
+        Self { width: 1000, height: 48, start_pct: 0.0, end_pct: 1.0 }
     }
 }

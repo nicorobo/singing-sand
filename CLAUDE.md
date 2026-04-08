@@ -29,6 +29,7 @@ Cargo workspace with six crates:
 | `ss-library` | lofty metadata, notify watcher, scan pipeline |
 | `ss-api` | axum HTTP server |
 | `ss-app` | Binary entry point — wires everything together |
+| `ss-waveform` | Waveform visualization |
 
 Dependency order: `ss-core` → `ss-db` → `ss-audio`, `ss-library` → `ss-api` → `ss-app`
 

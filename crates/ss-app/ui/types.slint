@@ -1,0 +1,38 @@
+export struct TrackItem {
+    id: int,
+    title: string,
+    artist: string,
+    album: string,
+    duration-secs: float,
+    art: image,
+}
+
+export struct SidebarEntry {
+    id: int,
+    label: string,
+}
+
+export struct TagItem {
+    id: int,
+    name: string,
+    assigned: bool,
+}
+
+export struct ExpandedTagItem {
+    id: int,
+    name: string,
+}
+
+export struct ExpandedPlaylistItem {
+    id: int,
+    name: string,
+}
+
+export struct DirTreeItem {
+    path: string,
+    name: string,       // last path component
+    indent: int,        // 0 = root, 1 = child, … (capped at 4 in Rust)
+    has-children: bool,
+    is-expanded: bool,
+    is-root: bool,      // root items show a remove button on hover
+}

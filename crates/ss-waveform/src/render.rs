@@ -86,12 +86,19 @@ pub fn render_to_pixels(
             }
             DisplayStyle::TopHalf => {
                 let bar_h = (amplitude * h as f32) as usize;
-                let top = h.saturating_sub(bar_h);
                 let color = pick_color(low, mid, high, amplitude, &settings.color_scheme);
-                for y in top..h {
+                for y in 0..bar_h.min(h) {
                     pixels[y * w + x] = color;
                 }
             }
+        }
+    }
+
+    // Flip vertically so bars grow from the bottom up.
+    let pixels = buf.make_mut_slice();
+    for row in 0..h / 2 {
+        for col in 0..w {
+            pixels.swap(row * w + col, (h - 1 - row) * w + col);
         }
     }
 

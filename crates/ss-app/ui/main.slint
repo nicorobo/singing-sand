@@ -1,293 +1,11 @@
-import { Button, ListView, LineEdit, ScrollView } from "std-widgets.slint";
 import { SettingsWindow } from "settings.slint";
+import { Sidebar } from "sidebar.slint";
+import { TrackList } from "track-list.slint";
+import { PlayerPanel } from "player-panel.slint";
+import { TrackItem, SidebarEntry, TagItem, ExpandedTagItem, ExpandedPlaylistItem, DirTreeItem } from "types.slint";
+
 export { SettingsWindow }
-
-export struct TrackItem {
-    id: int,
-    title: string,
-    artist: string,
-    album: string,
-    duration-secs: float,
-    art: image,
-}
-
-export struct SidebarEntry {
-    id: int,
-    label: string,
-}
-
-export struct TagItem {
-    id: int,
-    name: string,
-    assigned: bool,
-}
-
-export struct ExpandedTagItem {
-    id: int,
-    name: string,
-}
-
-export struct ExpandedPlaylistItem {
-    id: int,
-    name: string,
-}
-
-export struct DirTreeItem {
-    path: string,
-    name: string,       // last path component
-    indent: int,        // 0 = root, 1 = child, … (capped at 4 in Rust)
-    has-children: bool,
-    is-expanded: bool,
-    is-root: bool,      // root items show a remove button on hover
-}
-
-// Tag pill used in the expanded track panel: shows a tag name (navigates to tag
-// view on click) and a × remove button. The two touch areas are non-overlapping.
-component TagPill inherits Rectangle {
-    in property <string> tag-name;
-    callback navigate();
-    callback remove();
-
-    height: 22px;
-    border-radius: 11px;
-    background: #89b4fa1a;
-    border-width: 1px;
-    border-color: #89b4fa55;
-    width: pill-text.preferred-width + 32px;  // 8 left + text + 2 gap + 18 btn + 4 right
-
-    pill-text := Text {
-        x: 8px;
-        y: (parent.height - self.preferred-height) / 2;
-        text: root.tag-name;
-        color: #89b4fa;
-        font-size: 11px;
-    }
-
-    // × remove button — has its own TouchArea so it doesn't interfere with navigate
-    remove-rect := Rectangle {
-        x: pill-text.x + pill-text.preferred-width + 2px;
-        y: (parent.height - 18px) / 2;
-        width: 18px;
-        height: 18px;
-        border-radius: 9px;
-        background: remove-ta.has-hover ? #f38ba820 : transparent;
-
-        Text {
-            text: "×";
-            color: remove-ta.has-hover ? #f38ba8 : #6c7086;
-            font-size: 12px;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
-
-        remove-ta := TouchArea {
-            clicked => { root.remove(); }
-        }
-    }
-
-    // Navigate touch area covers the text only (left of the remove button)
-    nav-ta := TouchArea {
-        width: pill-text.preferred-width + 12px;
-        clicked => { root.navigate(); }
-    }
-}
-
-// Detail panel rendered below the track row when it is expanded.
-// Displays duration, assigned tags, playlists, and an editable notes textarea.
-// Extensible: add new rows to the VerticalLayout as needed.
-component ExpandedTrackPanel inherits Rectangle {
-    in property <string>                   duration-formatted;
-    in property <[ExpandedTagItem]>        tags;
-    in property <[ExpandedPlaylistItem]>   playlists;
-    in property <string>                   notes;
-
-    callback remove-tag(int);
-    callback navigate-tag(int);
-    callback navigate-playlist(int);
-    callback notes-edited(string);
-
-    // When the notes property is set externally (on expand), sync the TextInput.
-    changed notes => { notes-input.text = root.notes; }
-
-    background: #16161f;
-
-    VerticalLayout {
-        padding-left: 16px;
-        padding-right: 16px;
-        padding-top: 10px;
-        padding-bottom: 12px;
-        spacing: 10px;
-
-        // ── Duration ─────────────────────────────────────────────────────────
-        HorizontalLayout {
-            spacing: 8px;
-            alignment: start;
-            height: 16px;
-
-            Text {
-                text: "Duration";
-                color: #6c7086;
-                font-size: 11px;
-                vertical-alignment: center;
-                width: 68px;
-            }
-            Text {
-                text: root.duration-formatted != "" ? root.duration-formatted : "—";
-                color: #a6adc8;
-                font-size: 11px;
-                vertical-alignment: center;
-            }
-        }
-
-        // ── Tags ──────────────────────────────────────────────────────────────
-        HorizontalLayout {
-            spacing: 8px;
-            alignment: start;
-
-            Text {
-                text: "Tags";
-                color: #6c7086;
-                font-size: 11px;
-                vertical-alignment: center;
-                width: 68px;
-                horizontal-stretch: 0;
-            }
-
-            if root.tags.length == 0: Text {
-                text: "No tags assigned";
-                color: #45475a;
-                font-size: 11px;
-                vertical-alignment: center;
-            }
-
-            if root.tags.length > 0: HorizontalLayout {
-                spacing: 5px;
-                alignment: start;
-                horizontal-stretch: 1;
-
-                for tag in root.tags: TagPill {
-                    tag-name: tag.name;
-                    navigate => { root.navigate-tag(tag.id); }
-                    remove => { root.remove-tag(tag.id); }
-                }
-            }
-        }
-
-        // ── Playlists — comma-separated clickable links ───────────────────────
-        HorizontalLayout {
-            spacing: 8px;
-            alignment: start;
-
-            Text {
-                text: "Playlists";
-                color: #6c7086;
-                font-size: 11px;
-                vertical-alignment: center;
-                width: 68px;
-                horizontal-stretch: 0;
-            }
-
-            if root.playlists.length == 0: Text {
-                text: "None";
-                color: #45475a;
-                font-size: 11px;
-                vertical-alignment: center;
-            }
-
-            if root.playlists.length > 0: HorizontalLayout {
-                spacing: 0;
-                alignment: start;
-                horizontal-stretch: 1;
-
-                for pl[i] in root.playlists: HorizontalLayout {
-                    alignment: start;
-                    spacing: 0;
-
-                    if i > 0: Text {
-                        text: ", ";
-                        color: #6c7086;
-                        font-size: 11px;
-                        vertical-alignment: center;
-                    }
-
-                    pl-link := Rectangle {
-                        width: pl-text.preferred-width;
-                        height: 20px;
-
-                        pl-text := Text {
-                            text: pl.name;
-                            color: pl-ta.has-hover ? #cdd6f4 : #89b4fa;
-                            font-size: 11px;
-                            vertical-alignment: center;
-                        }
-
-                        pl-ta := TouchArea {
-                            clicked => { root.navigate-playlist(pl.id); }
-                        }
-                    }
-                }
-            }
-        }
-
-        // ── Notes label ───────────────────────────────────────────────────────
-        Text {
-            text: "Notes";
-            color: #6c7086;
-            font-size: 11px;
-            height: 14px;
-        }
-
-        // ── Notes textarea ────────────────────────────────────────────────────
-        notes-box := Rectangle {
-            height: 80px;
-            border-radius: 4px;
-            background: #1e1e2e;
-            border-width: 1px;
-            border-color: notes-input.has-focus ? #89b4fa : #45475a;
-            clip: true;
-
-            notes-input := TextInput {
-                x: 8px;
-                y: 6px;
-                width: parent.width - 16px;
-                height: parent.height - 12px;
-                text: root.notes;
-                color: #cdd6f4;
-                font-size: 11px;
-                wrap: word-wrap;
-                edited => { root.notes-edited(self.text); }
-            }
-        }
-    }
-}
-
-// Small plain-text button used in the now-playing transport row.
-component TransportButton inherits Rectangle {
-    in property <string> label;
-    callback clicked;
-
-    height: 24px;
-    border-radius: 4px;
-    background: ta.has-hover ? #313244 : transparent;
-
-    HorizontalLayout {
-        padding-left: 8px;
-        padding-right: 8px;
-        alignment: center;
-
-        Text {
-            text: root.label;
-            color: #cdd6f4;
-            font-size: 11px;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
-    }
-
-    ta := TouchArea {
-        clicked => { root.clicked(); }
-    }
-}
+export { TrackItem, SidebarEntry, TagItem, ExpandedTagItem, ExpandedPlaylistItem, DirTreeItem } from "types.slint";
 
 export component AppWindow inherits Window {
     title: "Singing Sand";
@@ -297,31 +15,30 @@ export component AppWindow inherits Window {
 
     // Track list
     in property <[TrackItem]> tracks;
-    in-out property <int> current-track-id: -1;
+    in-out property <int>  current-track-id: -1;
     in-out property <bool> is-playing: false;
-    in property <float> position: 0.0;
-    in property <float> duration: 0.0;
-    in property <image> waveform-image;
+    in property <float>    position: 0.0;
+    in property <float>    duration: 0.0;
+    in property <image>    waveform-image;
 
     // Now-playing panel
     in property <image>  now-playing-art;
     in property <string> now-playing-title;
     in property <string> now-playing-artist;
-    // Number of tracks currently being analyzed in the background.
     in-out property <int> pending-analysis-count: 0;
 
     // Sidebar data
-    in property <[DirTreeItem]> dir-tree-items;
-    in property <[SidebarEntry]> sidebar-playlists;
-    in property <[SidebarEntry]> sidebar-tags;
+    in property <[DirTreeItem]>   dir-tree-items;
+    in property <[SidebarEntry]>  sidebar-playlists;
+    in property <[SidebarEntry]>  sidebar-tags;
 
     // Directory management
     in-out property <bool>   show-dir-duplicate-dialog: false;
     in-out property <string> dir-duplicate-message: "";
 
     // Navigation state
-    in-out property <int> nav-kind: 0;       // 0=all, 1=dir, 2=playlist, 3=tag
-    in-out property <int> nav-id: -1;
+    in-out property <int>    nav-kind: 0;       // 0=all, 1=dir, 2=playlist, 3=tag
+    in-out property <int>    nav-id: -1;
     in-out property <string> nav-dir: "";
 
     // Tag chips for the currently selected track
@@ -363,7 +80,7 @@ export component AppWindow inherits Window {
     callback create-tag(string);
 
     // Tag assignment for current track
-    callback toggle-tag(int, bool);   // tag_id, should_assign
+    callback toggle-tag(int, bool);
 
     // Expanded track row
     in-out property <int>  expanded-track-id: -1;
@@ -372,383 +89,44 @@ export component AppWindow inherits Window {
     in property <string>                 expanded-track-notes;
     in property <string>                 expanded-track-duration-formatted;
 
-    callback expand-track(int);             // track_id → load panel data
-    callback remove-tag-from-expanded(int); // tag_id
-    callback save-notes(int, string);       // track_id, notes_text
+    callback expand-track(int);
+    callback remove-tag-from-expanded(int);
+    callback save-notes(int, string);
 
-    // Add a track to a playlist
-    callback add-to-playlist(int, int);      // playlist_id, track_id
-    callback remove-from-playlist(int, int); // playlist_id, track_id
+    // Playlist track management
+    callback add-to-playlist(int, int);
+    callback remove-from-playlist(int, int);
 
     // Settings window — opened from Rust via on_settings_clicked
     callback settings-clicked();
 
     HorizontalLayout {
         // ── Sidebar ──────────────────────────────────────────────────────────
-        Rectangle {
-            width: 200px;
-            background: #11111b;
+        Sidebar {
+            dir-tree-items:    root.dir-tree-items;
+            sidebar-playlists: root.sidebar-playlists;
+            sidebar-tags:      root.sidebar-tags;
+            drag-track-id:     root.drag-track-id;
+            drag-x:            root.drag-x;
+            drag-y:            root.drag-y;
 
-            VerticalLayout {
-            sidebar-scroll := ScrollView {
-             vertical-stretch: 1;
-             viewport-width: 200px;
+            nav-kind             <=> root.nav-kind;
+            nav-id               <=> root.nav-id;
+            nav-dir              <=> root.nav-dir;
+            creating-playlist    <=> root.creating-playlist;
+            creating-tag         <=> root.creating-tag;
+            drag-over-playlist-id <=> root.drag-over-playlist-id;
 
-            VerticalLayout {
-                width: 200px;
-                padding-top: 8px;
-                padding-bottom: 8px;
-                spacing: 0px;
-
-                // All Tracks row
-                Rectangle {
-                    height: 32px;
-                    background: root.nav-kind == 0
-                        ? #313244
-                        : (all-ta.has-hover ? #1e1e2e : transparent);
-
-                    HorizontalLayout {
-                        padding-left: 12px;
-                        spacing: 6px;
-                        Text {
-                            text: "All Tracks";
-                            color: root.nav-kind == 0 ? #cdd6f4 : #a6adc8;
-                            font-size: 12px;
-                            vertical-alignment: center;
-                        }
-                    }
-
-                    all-ta := TouchArea {
-                        clicked => {
-                            root.nav-kind = 0;
-                            root.nav-id = -1;
-                            root.nav-dir = "";
-                            root.nav-all();
-                        }
-                    }
-                }
-
-                // ── Directories section ───────────────────────────────────
-                Rectangle {
-                    height: 28px;
-                    HorizontalLayout {
-                        padding-left: 12px;
-                        padding-right: 8px;
-                        padding-top: 10px;
-                        Text {
-                            text: "DIRECTORIES";
-                            color: #45475a;
-                            font-size: 10px;
-                            horizontal-stretch: 1;
-                            vertical-alignment: center;
-                        }
-                        Rectangle {
-                            width: 18px;
-                            height: 18px;
-                            y: 5px;
-                            border-radius: 3px;
-                            background: add-dir-ta.has-hover ? #313244 : transparent;
-                            Text {
-                                text: "+";
-                                color: #6c7086;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                                font-size: 14px;
-                            }
-                            add-dir-ta := TouchArea {
-                                clicked => { root.add-directory-clicked(); }
-                            }
-                        }
-                    }
-                }
-
-                // Directory tree — flat list with per-item indent + chevron
-                for item in root.dir-tree-items: Rectangle {
-                    height: 32px;
-                    property <bool> selected: root.nav-kind == 1 && root.nav-dir == item.path;
-                    background: selected ? #313244 : (row-ta.has-hover ? #1e1e2e : transparent);
-
-                    HorizontalLayout {
-                        spacing: 0;
-                        // Indent spacer
-                        Rectangle { width: item.indent * 12px + 4px; }
-                        // Chevron (16px, always present to keep alignment)
-                        Rectangle {
-                            width: 16px;
-                            Text {
-                                text: item.has-children ? (item.is-expanded ? "▼" : "▶") : "";
-                                color: #6c7086;
-                                font-size: 9px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-                        // Directory name
-                        Text {
-                            text: item.name;
-                            color: selected ? #cdd6f4 : #a6adc8;
-                            font-size: 12px;
-                            vertical-alignment: center;
-                            overflow: elide;
-                            wrap: no-wrap;
-                            horizontal-stretch: 1;
-                        }
-                        // Remove button — root items only, visible on hover
-                        if item.is-root: Rectangle {
-                            width: 22px;
-                            visible: row-ta.has-hover;
-                            background: remove-dir-ta.has-hover ? #f38ba820 : transparent;
-                            border-radius: 9px;
-                            Text {
-                                text: "×";
-                                color: #f38ba8;
-                                font-size: 12px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                            remove-dir-ta := TouchArea {
-                                clicked => { root.remove-scanned-dir(item.path); }
-                            }
-                        }
-                        Rectangle { width: 4px; }
-                    }
-
-                    // Row touch area — navigate + expand/collapse
-                    row-ta := TouchArea {
-                        clicked => {
-                            root.nav-kind = 1;
-                            root.nav-id = -1;
-                            root.nav-dir = item.path;
-                            root.nav-select-dir(item.path);
-                            if (item.has-children) {
-                                root.toggle-dir-expanded(item.path);
-                            }
-                        }
-                    }
-                }
-
-                // ── Playlists section ─────────────────────────────────────
-                Rectangle {
-                    height: 28px;
-                    HorizontalLayout {
-                        padding-left: 12px;
-                        padding-right: 8px;
-                        padding-top: 10px;
-                        Text {
-                            text: "PLAYLISTS";
-                            color: #45475a;
-                            font-size: 10px;
-                            horizontal-stretch: 1;
-                            vertical-alignment: center;
-                        }
-                        Rectangle {
-                            width: 18px;
-                            height: 18px;
-                            y: 5px;
-                            border-radius: 3px;
-                            background: add-pl-ta.has-hover ? #313244 : transparent;
-                            Text {
-                                text: "+";
-                                color: #6c7086;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                                font-size: 14px;
-                            }
-                            add-pl-ta := TouchArea {
-                                clicked => { root.creating-playlist = true; }
-                            }
-                        }
-                    }
-                }
-
-                // Sidebar layout geometry (px from VerticalLayout top):
-                //   8 padding-top + 32 All-Tracks + 28 DIRS header
-                //   + N*32 dir tree rows + 28 PLAYLISTS header = 96 + N*32
-                // Each playlist row adds another 32px.
-                // sidebar-scroll.viewport-y accounts for scroll offset (0 = top, negative = scrolled down).
-                for pl[pl-i] in root.sidebar-playlists: Rectangle {
-                    height: 32px;
-
-                    property <length> item-top:
-                        96px + root.dir-tree-items.length * 32px + pl-i * 32px
-                        + sidebar-scroll.viewport-y;
-
-                    property <bool> is-drop-target:
-                        root.drag-track-id >= 0
-                        && root.drag-x < 200px
-                        && root.drag-y >= item-top
-                        && root.drag-y < item-top + 32px;
-
-                    changed is-drop-target => {
-                        if root.drag-track-id >= 0
-                                && root.drag-x < 200px
-                                && root.drag-y >= item-top
-                                && root.drag-y < item-top + 32px {
-                            root.drag-over-playlist-id = pl.id;
-                        } else if root.drag-over-playlist-id == pl.id {
-                            root.drag-over-playlist-id = -1;
-                        }
-                    }
-
-                    background: self.is-drop-target
-                        ? #2a3a5e
-                        : (root.nav-kind == 2 && root.nav-id == pl.id
-                            ? #313244
-                            : (pl-ta.has-hover ? #1e1e2e : transparent));
-                    border-width: 1px;
-                    border-color: self.is-drop-target ? #89b4fa : transparent;
-
-                    HorizontalLayout {
-                        padding-left: 20px;
-                        Text {
-                            text: pl.label;
-                            color: (root.drag-track-id >= 0 && root.drag-over-playlist-id == pl.id)
-                                ? #89b4fa
-                                : (root.nav-kind == 2 && root.nav-id == pl.id
-                                    ? #cdd6f4 : #a6adc8);
-                            font-size: 12px;
-                            vertical-alignment: center;
-                            overflow: elide;
-                        }
-                    }
-
-                    pl-ta := TouchArea {
-                        clicked => {
-                            root.nav-kind = 2;
-                            root.nav-id = pl.id;
-                            root.nav-dir = "";
-                            root.nav-playlist(pl.id);
-                        }
-                    }
-                }
-
-                if root.creating-playlist: Rectangle {
-                    height: 32px;
-                    HorizontalLayout {
-                        padding-left: 16px;
-                        padding-right: 8px;
-                        padding-top: 4px;
-                        padding-bottom: 4px;
-                        new-pl-input := LineEdit {
-                            placeholder-text: "Playlist name…";
-                            font-size: 12px;
-                            horizontal-stretch: 1;
-                            accepted(text) => {
-                                if text != "" {
-                                    root.create-playlist(text);
-                                }
-                                root.creating-playlist = false;
-                                self.text = "";
-                            }
-                        }
-                    }
-                }
-
-                // ── Tags section ──────────────────────────────────────────
-                Rectangle {
-                    height: 28px;
-                    HorizontalLayout {
-                        padding-left: 12px;
-                        padding-right: 8px;
-                        padding-top: 10px;
-                        Text {
-                            text: "TAGS";
-                            color: #45475a;
-                            font-size: 10px;
-                            horizontal-stretch: 1;
-                            vertical-alignment: center;
-                        }
-                        Rectangle {
-                            width: 18px;
-                            height: 18px;
-                            y: 5px;
-                            border-radius: 3px;
-                            background: add-tag-ta.has-hover ? #313244 : transparent;
-                            Text {
-                                text: "+";
-                                color: #6c7086;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                                font-size: 14px;
-                            }
-                            add-tag-ta := TouchArea {
-                                clicked => { root.creating-tag = true; }
-                            }
-                        }
-                    }
-                }
-
-                for tag in root.sidebar-tags: Rectangle {
-                    height: 32px;
-                    background: root.nav-kind == 3 && root.nav-id == tag.id
-                        ? #313244
-                        : (tag-ta.has-hover ? #1e1e2e : transparent);
-
-                    HorizontalLayout {
-                        padding-left: 20px;
-                        Text {
-                            text: tag.label;
-                            color: root.nav-kind == 3 && root.nav-id == tag.id
-                                ? #cdd6f4 : #a6adc8;
-                            font-size: 12px;
-                            vertical-alignment: center;
-                            overflow: elide;
-                        }
-                    }
-
-                    tag-ta := TouchArea {
-                        clicked => {
-                            root.nav-kind = 3;
-                            root.nav-id = tag.id;
-                            root.nav-dir = "";
-                            root.nav-tag(tag.id);
-                        }
-                    }
-                }
-
-                if root.creating-tag: Rectangle {
-                    height: 32px;
-                    HorizontalLayout {
-                        padding-left: 16px;
-                        padding-right: 8px;
-                        padding-top: 4px;
-                        padding-bottom: 4px;
-                        new-tag-input := LineEdit {
-                            placeholder-text: "Tag name…";
-                            font-size: 12px;
-                            horizontal-stretch: 1;
-                            accepted(text) => {
-                                if text != "" {
-                                    root.create-tag(text);
-                                }
-                                root.creating-tag = false;
-                                self.text = "";
-                            }
-                        }
-                    }
-                }
-            }
-            } // ScrollView
-
-            // ── Gear icon footer ──────────────────────────────────────────
-            Rectangle {
-                height: 36px;
-                background: #0d0d17;
-                HorizontalLayout {
-                    padding-left: 12px;
-                    alignment: start;
-                    Text {
-                        text: "⚙";
-                        color: gear-ta.has-hover ? #cdd6f4 : #6c7086;
-                        font-size: 14px;
-                        vertical-alignment: center;
-                    }
-                }
-                gear-ta := TouchArea {
-                    clicked => { root.settings-clicked(); }
-                }
-            }
-            } // VerticalLayout
+            nav-all             => { root.nav-all(); }
+            nav-select-dir(p)   => { root.nav-select-dir(p); }
+            nav-playlist(id)    => { root.nav-playlist(id); }
+            nav-tag(id)         => { root.nav-tag(id); }
+            add-directory-clicked => { root.add-directory-clicked(); }
+            toggle-dir-expanded(p) => { root.toggle-dir-expanded(p); }
+            remove-scanned-dir(p)  => { root.remove-scanned-dir(p); }
+            create-playlist(n)  => { root.create-playlist(n); }
+            create-tag(n)       => { root.create-tag(n); }
+            settings-clicked    => { root.settings-clicked(); }
         }
 
         // Sidebar divider
@@ -761,448 +139,56 @@ export component AppWindow inherits Window {
         VerticalLayout {
             horizontal-stretch: 1;
 
-            // Column headers
-            Rectangle {
-                height: 36px;
-                background: #181825;
+            TrackList {
+                tracks:                          root.tracks;
+                current-track-tags:              root.current-track-tags;
+                expanded-track-tags:             root.expanded-track-tags;
+                expanded-track-playlists:        root.expanded-track-playlists;
+                expanded-track-notes:            root.expanded-track-notes;
+                expanded-track-duration-formatted: root.expanded-track-duration-formatted;
 
-                HorizontalLayout {
-                    padding-left: 12px;
-                    padding-right: 12px;
-                    spacing: 8px;
+                current-track-id      <=> root.current-track-id;
+                is-playing            <=> root.is-playing;
+                expanded-track-id     <=> root.expanded-track-id;
+                drag-track-id         <=> root.drag-track-id;
+                drag-title            <=> root.drag-title;
+                drag-x                <=> root.drag-x;
+                drag-y                <=> root.drag-y;
+                drag-over-playlist-id <=> root.drag-over-playlist-id;
+                nav-kind              <=> root.nav-kind;
+                nav-id                <=> root.nav-id;
+                nav-dir               <=> root.nav-dir;
 
-                    // Spacer matching art thumbnail column
-                    Rectangle { width: 44px; }
-
-                    Text {
-                        text: "Title";
-                        color: #6c7086;
-                        font-size: 11px;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                    }
-                    Text {
-                        text: "Artist";
-                        color: #6c7086;
-                        font-size: 11px;
-                        vertical-alignment: center;
-                        width: 160px;
-                    }
-                    Text {
-                        text: "Album";
-                        color: #6c7086;
-                        font-size: 11px;
-                        vertical-alignment: center;
-                        width: 160px;
-                    }
-                }
+                play-track(id)            => { root.play-track(id); }
+                expand-track(id)          => { root.expand-track(id); }
+                remove-tag-from-expanded(id) => { root.remove-tag-from-expanded(id); }
+                save-notes(id, text)      => { root.save-notes(id, text); }
+                toggle-tag(id, v)         => { root.toggle-tag(id, v); }
+                add-to-playlist(pl, tr)   => { root.add-to-playlist(pl, tr); }
+                remove-from-playlist(pl, tr) => { root.remove-from-playlist(pl, tr); }
+                nav-tag(id)               => { root.nav-tag(id); }
+                nav-playlist(id)          => { root.nav-playlist(id); }
             }
 
-            // Track list
-            ListView {
-                vertical-stretch: 1;
+            PlayerPanel {
+                waveform-image:    root.waveform-image;
+                position:          root.position;
+                duration:          root.duration;
+                now-playing-art:   root.now-playing-art;
+                now-playing-title: root.now-playing-title;
+                now-playing-artist: root.now-playing-artist;
+                current-track-id:  root.current-track-id;
+                nav-kind:          root.nav-kind;
+                nav-id:            root.nav-id;
 
-                for track in root.tracks: Rectangle {
-                    property <bool>   is-expanded: root.expanded-track-id == track.id;
-                    property <length> panel-height: 240px;
-                    height: is-expanded ? 44px + panel-height : 44px;
+                is-playing <=> root.is-playing;
 
-                    property <length> press-x: 0;
-                    property <length> press-y: 0;
-                    property <bool>   did-drag: false;
-                    property <bool>   row-hovered: main-ta.has-hover || rm-ta.has-hover || arrow-ta.has-hover;
-
-                    background: root.current-track-id == track.id
-                        ? #313244
-                        : (row-hovered ? #26273a : transparent);
-
-                    // ── Top row ───────────────────────────────────────────────
-                    HorizontalLayout {
-                        y: 0;
-                        height: 44px;
-                        padding-left: 12px;
-                        spacing: 8px;
-
-                        // Album art thumbnail
-                        Rectangle {
-                            width: 44px;
-                            height: 44px;
-                            background: #313244;
-                            border-radius: 2px;
-
-                            Image {
-                                width: parent.width;
-                                height: parent.height;
-                                source: track.art;
-                                image-fit: cover;
-                                visible: track.art.width > 0;
-                            }
-
-                            Text {
-                                text: "♪";
-                                color: #45475a;
-                                font-size: 14px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                                visible: track.art.width == 0;
-                            }
-                        }
-
-                        // Main track info + drag/play area
-                        Rectangle {
-                            horizontal-stretch: 1;
-                            clip: true;
-
-                            HorizontalLayout {
-                                padding-right: 12px;
-                                spacing: 8px;
-
-                                Text {
-                                    text: track.title != "" ? track.title : "(unknown)";
-                                    color: root.current-track-id == track.id ? #cdd6f4 : #bac2de;
-                                    font-weight: root.current-track-id == track.id ? 700 : 400;
-                                    vertical-alignment: center;
-                                    horizontal-stretch: 1;
-                                    overflow: elide;
-                                }
-                                Text {
-                                    text: track.artist;
-                                    color: #a6adc8;
-                                    vertical-alignment: center;
-                                    width: 160px;
-                                    overflow: elide;
-                                }
-                                Text {
-                                    text: track.album;
-                                    color: #7f849c;
-                                    vertical-alignment: center;
-                                    width: 160px;
-                                    overflow: elide;
-                                }
-                            }
-
-                            main-ta := TouchArea {
-                                pointer-event(e) => {
-                                    if e.kind == PointerEventKind.down {
-                                        press-x = self.mouse-x;
-                                        press-y = self.mouse-y;
-                                        did-drag = false;
-                                    }
-                                    if e.kind == PointerEventKind.up && root.drag-track-id == track.id {
-                                        did-drag = true;
-                                        if root.drag-over-playlist-id >= 0 {
-                                            root.add-to-playlist(root.drag-over-playlist-id, track.id);
-                                        }
-                                        root.drag-track-id = -1;
-                                        root.drag-title = "";
-                                    }
-                                }
-                                moved => {
-                                    if (self.mouse-x - press-x > 8px || press-x - self.mouse-x > 8px
-                                        || self.mouse-y - press-y > 8px || press-y - self.mouse-y > 8px) {
-                                        root.drag-track-id = track.id;
-                                        root.drag-title = track.title != "" ? track.title : "(unknown)";
-                                    }
-                                    if root.drag-track-id == track.id {
-                                        root.drag-x = self.absolute-position.x + self.mouse-x;
-                                        root.drag-y = self.absolute-position.y + self.mouse-y;
-                                    }
-                                }
-                                clicked => {
-                                    if !did-drag {
-                                        root.current-track-id = track.id;
-                                        root.is-playing = true;
-                                        root.play-track(track.id);
-                                    }
-                                    did-drag = false;
-                                }
-                            }
-                        }
-
-                        // Expand / collapse arrow — always present so arrow-ta is addressable
-                        Rectangle {
-                            width: 32px;
-                            height: 44px;
-                            opacity: row-hovered || is-expanded ? 1.0 : 0.0;
-                            background: arrow-ta.has-hover ? #313244 : transparent;
-                            border-radius: 4px;
-
-                            Text {
-                                text: is-expanded ? "▼" : "▶";
-                                color: is-expanded ? #89b4fa : #6c7086;
-                                font-size: 9px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-
-                            arrow-ta := TouchArea {
-                                clicked => {
-                                    if is-expanded {
-                                        root.expanded-track-id = -1;
-                                    } else {
-                                        root.expanded-track-id = track.id;
-                                        root.expand-track(track.id);
-                                    }
-                                }
-                            }
-                        }
-
-                        // Remove-from-playlist button — always in layout, zero-width when not
-                        // in playlist view so rm-ta is always addressable for has-hover above.
-                        Rectangle {
-                            width: root.nav-kind == 2 ? 44px : 0px;
-                            clip: true;
-                            opacity: row-hovered ? 1.0 : 0.0;
-                            background: rm-ta.has-hover ? #f38ba820 : transparent;
-
-                            Text {
-                                text: "×";
-                                color: #f38ba8;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                                font-size: 18px;
-                            }
-
-                            rm-ta := TouchArea {
-                                enabled: root.nav-kind == 2;
-                                clicked => {
-                                    root.remove-from-playlist(root.nav-id, track.id);
-                                }
-                            }
-                        }
-                    }
-
-                    // ── Expanded detail panel ─────────────────────────────────
-                    if is-expanded: ExpandedTrackPanel {
-                        y: 44px;
-                        height: panel-height;
-                        duration-formatted: root.expanded-track-duration-formatted;
-                        tags: root.expanded-track-tags;
-                        playlists: root.expanded-track-playlists;
-                        notes: root.expanded-track-notes;
-                        remove-tag(tid) => { root.remove-tag-from-expanded(tid); }
-                        navigate-tag(tid) => {
-                            root.expanded-track-id = -1;
-                            root.nav-kind = 3;
-                            root.nav-id = tid;
-                            root.nav-dir = "";
-                            root.nav-tag(tid);
-                        }
-                        navigate-playlist(pid) => {
-                            root.expanded-track-id = -1;
-                            root.nav-kind = 2;
-                            root.nav-id = pid;
-                            root.nav-dir = "";
-                            root.nav-playlist(pid);
-                        }
-                        notes-edited(text) => { root.save-notes(track.id, text); }
-                    }
-
-                    // Bottom divider
-                    Rectangle {
-                        y: parent.height - 1px;
-                        height: 1px;
-                        background: #313244;
-                    }
-                }
-            }
-
-            // Tag assignment bar (visible when a track is selected)
-            if root.current-track-id >= 0: Rectangle {
-                height: 40px;
-                background: #181825;
-
-                if root.current-track-tags.length == 0: Text {
-                    text: "Create tags in the sidebar to organize tracks";
-                    color: #45475a;
-                    font-size: 11px;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                    width: parent.width;
-                    height: parent.height;
-                }
-
-                HorizontalLayout {
-                    padding-left: 12px;
-                    padding-right: 12px;
-                    padding-top: 8px;
-                    padding-bottom: 8px;
-                    spacing: 6px;
-                    alignment: start;
-
-                    for tag in root.current-track-tags: Rectangle {
-                        width: chip-text.preferred-width + 16px;
-                        height: 24px;
-                        border-radius: 12px;
-                        background: tag.assigned ? #89b4fa26 : transparent;
-                        border-width: 1px;
-                        border-color: tag.assigned ? #89b4fa : #45475a;
-
-                        chip-text := Text {
-                            x: 8px;
-                            y: 4px;
-                            text: tag.name;
-                            color: tag.assigned ? #89b4fa : #6c7086;
-                            font-size: 11px;
-                        }
-
-                        TouchArea {
-                            clicked => { root.toggle-tag(tag.id, !tag.assigned); }
-                        }
-                    }
-                }
-            }
-
-            // Waveform display (top half only — container clips the symmetric waveform)
-            waveform-rect := Rectangle {
-                height: 48px;
-                background: #181825;
-                clip: true;
-
-                Image {
-                    width: parent.width;
-                    height: 96px;   // full render height; clip shows top half
-                    source: root.waveform-image;
-                    image-fit: fill;
-                }
-
-                if root.waveform-image.width == 0: Text {
-                    text: "No track loaded";
-                    color: #45475a;
-                    font-size: 11px;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                    width: parent.width;
-                    height: parent.height;
-                }
-
-                if root.duration > 0.0 && root.waveform-image.width > 0: Rectangle {
-                    x: (root.position / root.duration) * waveform-rect.width - 1px;
-                    y: 0;
-                    width: 2px;
-                    height: parent.height;
-                    background: #f38ba8;
-                }
-
-                waveform-ta := TouchArea {
-                    clicked => {
-                        if root.duration > 0.0 {
-                            root.seek(waveform-ta.mouse-x / waveform-rect.width);
-                        }
-                    }
-                }
-            }
-
-            // Now-playing panel (visible when a track is loaded)
-            if root.current-track-id >= 0: Rectangle {
-                height: 80px;
-                background: #181825;
-
-                // Top divider
-                Rectangle {
-                    y: 0;
-                    height: 1px;
-                    width: parent.width;
-                    background: #313244;
-                }
-
-                HorizontalLayout {
-                    padding: 10px;
-                    spacing: 12px;
-
-                    // Album art
-                    Rectangle {
-                        width: 60px;
-                        height: 60px;
-                        background: #313244;
-                        border-radius: 4px;
-
-                        Image {
-                            width: parent.width;
-                            height: parent.height;
-                            source: root.now-playing-art;
-                            image-fit: cover;
-                            visible: root.now-playing-art.width > 0;
-                        }
-
-                        Text {
-                            text: "♪";
-                            color: #45475a;
-                            font-size: 24px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                            visible: root.now-playing-art.width == 0;
-                        }
-                    }
-
-                    // Track info + controls
-                    VerticalLayout {
-                        horizontal-stretch: 1;
-                        alignment: center;
-                        spacing: 4px;
-
-                        Text {
-                            text: root.now-playing-title != "" ? root.now-playing-title : "(unknown)";
-                            font-size: 13px;
-                            font-weight: 700;
-                            color: #cdd6f4;
-                            overflow: elide;
-                            wrap: no-wrap;
-                        }
-
-                        Text {
-                            text: root.now-playing-artist;
-                            font-size: 11px;
-                            color: #a6adc8;
-                            overflow: elide;
-                            wrap: no-wrap;
-                        }
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            alignment: start;
-
-                            TransportButton {
-                                label: "Prev";
-                                clicked => { root.prev-track(); }
-                            }
-
-                            TransportButton {
-                                label: root.is-playing ? "Pause" : "Play";
-                                clicked => {
-                                    if root.is-playing {
-                                        root.is-playing = false;
-                                        root.pause();
-                                    } else {
-                                        root.is-playing = true;
-                                        root.play();
-                                    }
-                                }
-                            }
-
-                            TransportButton {
-                                label: "Next";
-                                clicked => { root.next-track(); }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Shown only when browsing a playlist — adds current track
-            if root.nav-kind == 2 && root.current-track-id >= 0: Rectangle {
-                height: 52px;
-                background: #181825;
-
-                HorizontalLayout {
-                    alignment: center;
-                    padding: 10px;
-
-                    Button {
-                        text: "Add to playlist";
-                        clicked => { root.add-to-playlist(root.nav-id, root.current-track-id); }
-                    }
-                }
+                seek(f)           => { root.seek(f); }
+                play              => { root.play(); }
+                pause             => { root.pause(); }
+                prev-track        => { root.prev-track(); }
+                next-track        => { root.next-track(); }
+                add-to-playlist(pl, tr) => { root.add-to-playlist(pl, tr); }
             }
         }
     }
