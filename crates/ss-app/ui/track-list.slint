@@ -252,6 +252,16 @@ export component TrackList inherits VerticalLayout {
     callback nav-tag(int);
     callback nav-playlist(int);
 
+    in-out property <string> search-filter: "";
+    callback search-filter-changed(string);
+    callback clear-search-filter();
+
+    changed search-filter => {
+        if search-input.text != root.search-filter {
+            search-input.text = root.search-filter;
+        }
+    }
+
     // Column headers
     Rectangle {
         height: 36px;
@@ -259,7 +269,7 @@ export component TrackList inherits VerticalLayout {
 
         HorizontalLayout {
             padding-left: 12px;
-            padding-right: 12px;
+            padding-right: 8px;
             spacing: 8px;
 
             Rectangle { width: 44px; }
@@ -284,6 +294,70 @@ export component TrackList inherits VerticalLayout {
                 font-size: 11px;
                 vertical-alignment: center;
                 width: 160px;
+            }
+
+            // ── Search field ──────────────────────────────────────────────
+            search-box := Rectangle {
+                width: 180px;
+                height: 24px;
+                border-radius: 4px;
+                background: search-input.has-focus ? #1e1e2e : #181825;
+                border-width: 1px;
+                border-color: search-input.has-focus ? #89b4fa : #313244;
+
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 4px;
+                    spacing: 4px;
+
+                    search-input := TextInput {
+                        horizontal-stretch: 1;
+                        color: #cdd6f4;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                        edited => { root.search-filter-changed(self.text); }
+                        key-pressed(e) => {
+                            if e.text == Key.Escape {
+                                self.text = "";
+                                root.search-filter-changed("");
+                                accept
+                            } else {
+                                reject
+                            }
+                        }
+                    }
+
+                    if root.search-filter != "": Rectangle {
+                        width: 16px;
+                        height: 16px;
+                        border-radius: 8px;
+                        background: clear-ta.has-hover ? #45475a : transparent;
+
+                        Text {
+                            text: "×";
+                            color: #6c7086;
+                            font-size: 13px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        clear-ta := TouchArea {
+                            clicked => {
+                                search-input.text = "";
+                                root.search-filter-changed("");
+                            }
+                        }
+                    }
+                }
+
+                // Placeholder overlay when empty and unfocused
+                if root.search-filter == "" && !search-input.has-focus: Text {
+                    x: 8px;
+                    y: (parent.height - self.preferred-height) / 2;
+                    text: "Filter…";
+                    color: #45475a;
+                    font-size: 11px;
+                }
             }
         }
     }

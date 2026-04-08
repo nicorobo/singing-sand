@@ -100,6 +100,11 @@ export component AppWindow inherits Window {
     // Settings window — opened from Rust via on_settings_clicked
     callback settings-clicked();
 
+    // Search / filter
+    in-out property <string> search-filter: "";
+    callback search-filter-changed(string);
+    callback clear-search-filter();
+
     HorizontalLayout {
         // ── Sidebar ──────────────────────────────────────────────────────────
         Sidebar {
@@ -117,10 +122,10 @@ export component AppWindow inherits Window {
             creating-tag         <=> root.creating-tag;
             drag-over-playlist-id <=> root.drag-over-playlist-id;
 
-            nav-all             => { root.nav-all(); }
-            nav-select-dir(p)   => { root.nav-select-dir(p); }
-            nav-playlist(id)    => { root.nav-playlist(id); }
-            nav-tag(id)         => { root.nav-tag(id); }
+            nav-all             => { root.clear-search-filter(); root.nav-all(); }
+            nav-select-dir(p)   => { root.clear-search-filter(); root.nav-select-dir(p); }
+            nav-playlist(id)    => { root.clear-search-filter(); root.nav-playlist(id); }
+            nav-tag(id)         => { root.clear-search-filter(); root.nav-tag(id); }
             add-directory-clicked => { root.add-directory-clicked(); }
             toggle-dir-expanded(p) => { root.toggle-dir-expanded(p); }
             remove-scanned-dir(p)  => { root.remove-scanned-dir(p); }
@@ -168,6 +173,10 @@ export component AppWindow inherits Window {
                 remove-from-playlist(pl, tr) => { root.remove-from-playlist(pl, tr); }
                 nav-tag(id)               => { root.nav-tag(id); }
                 nav-playlist(id)          => { root.nav-playlist(id); }
+
+                search-filter             <=> root.search-filter;
+                search-filter-changed(s)  => { root.search-filter-changed(s); }
+                clear-search-filter       => { root.clear-search-filter(); }
             }
 
             PlayerPanel {

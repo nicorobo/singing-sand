@@ -67,9 +67,12 @@ impl Scanner {
                             debug!(id = t.id, path = %path.display(), "upserted");
                             stats.upserted += 1;
                             stats.upserted_tracks.push((t.id, path.clone()));
-                            if let Some(art_bytes) = extract_primary_art(&path) {
+                            if let Some((art_bytes, thumb_bytes)) = extract_primary_art(&path) {
                                 if let Err(e) = self.db.save_album_art(t.id, &art_bytes).await {
                                     warn!(path = %path.display(), error = %e, "failed to save album art");
+                                }
+                                if let Err(e) = self.db.save_thumbnail_44(t.id, &thumb_bytes).await {
+                                    warn!(path = %path.display(), error = %e, "failed to save thumbnail");
                                 }
                             }
                         }
@@ -102,7 +105,7 @@ impl Scanner {
         let t = self.db.upsert_track(&track).await?;
         let result_path = track.path.clone();
         let art_path = track.path.clone();
-        if let Some(art_bytes) =
+        if let Some((art_bytes, thumb_bytes)) =
             tokio::task::spawn_blocking(move || extract_primary_art(&art_path))
                 .await
                 .ok()
@@ -110,6 +113,9 @@ impl Scanner {
         {
             if let Err(e) = self.db.save_album_art(t.id, &art_bytes).await {
                 warn!(path = %result_path.display(), error = %e, "failed to save album art (single file)");
+            }
+            if let Err(e) = self.db.save_thumbnail_44(t.id, &thumb_bytes).await {
+                warn!(path = %result_path.display(), error = %e, "failed to save thumbnail (single file)");
             }
         }
         Ok(Some((t.id, result_path)))
@@ -259,11 +265,22 @@ fn collect_audio_paths(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Extract the first embedded picture from an audio file.
-/// Returns raw JPEG/PNG bytes, or `None` if the file has no embedded art.
-fn extract_primary_art(path: &Path) -> Option<Vec<u8>> {
+/// Returns `(raw_bytes, thumbnail_rgb)`, or `None` if the file has no embedded art.
+/// `thumbnail_rgb` is an 88×88 raw RGB byte buffer ready for `SharedPixelBuffer`.
+fn extract_primary_art(path: &Path) -> Option<(Vec<u8>, Vec<u8>)> {
     let tagged_file = lofty::read_from_path(path).ok()?;
     let tag = tagged_file.primary_tag()?;
-    tag.pictures().first().map(|p| p.data().to_vec())
+    let raw = tag.pictures().first().map(|p| p.data().to_vec())?;
+    let thumb = compute_thumbnail(&raw).unwrap_or_default();
+    Some((raw, thumb))
+}
+
+/// Decode `raw` JPEG/PNG bytes and produce an 88×88 raw RGB byte vec.
+/// 88px = 2× the 44px display size, so artwork is sharp on retina screens.
+fn compute_thumbnail(raw: &[u8]) -> Option<Vec<u8>> {
+    let img = image::load_from_memory(raw).ok()?;
+    let resized = img.resize_to_fill(88, 88, image::imageops::FilterType::Triangle);
+    Some(resized.to_rgb8().into_raw())
 }
 
 /// Read metadata from an audio file using lofty.

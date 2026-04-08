@@ -340,6 +340,30 @@ impl Db {
         Ok(row.map(|r| r.get("data")))
     }
 
+    /// Persist a pre-decoded 44×44 raw RGB thumbnail (5,808 bytes). Upsert semantics.
+    pub async fn save_thumbnail_44(&self, track_id: i64, data: &[u8]) -> Result<()> {
+        sqlx::query(
+            r#"INSERT INTO album_art (track_id, data, thumbnail_44) VALUES (?, '', ?)
+               ON CONFLICT(track_id) DO UPDATE SET thumbnail_44 = excluded.thumbnail_44"#,
+        )
+        .bind(track_id)
+        .bind(data)
+        .execute(&self.pool)
+        .await
+        .context("save_thumbnail_44 failed")?;
+        Ok(())
+    }
+
+    /// Fetch pre-decoded 44×44 raw RGB thumbnail. Returns `None` if not yet computed.
+    pub async fn get_thumbnail_44(&self, track_id: i64) -> Result<Option<Vec<u8>>> {
+        let row = sqlx::query("SELECT thumbnail_44 FROM album_art WHERE track_id = ?")
+            .bind(track_id)
+            .fetch_optional(&self.pool)
+            .await
+            .context("get_thumbnail_44 failed")?;
+        Ok(row.and_then(|r| r.get("thumbnail_44")))
+    }
+
     /// Total number of tracks in the database.
     pub async fn track_count(&self) -> Result<i64> {
         let row = sqlx::query("SELECT COUNT(*) as count FROM tracks")
@@ -648,6 +672,99 @@ impl Db {
         .fetch_all(&self.pool)
         .await
         .context("list_tracks_with_tag failed")?;
+        Ok(rows.iter().map(row_to_track).collect())
+    }
+
+    // ── Filtered queries ──────────────────────────────────────────────────────
+
+    pub async fn list_tracks_filtered(&self, needle: &str) -> Result<Vec<Track>> {
+        let pattern = format!("%{}%", needle);
+        let rows = sqlx::query(
+            r#"SELECT id, path, title, artist, album, duration_secs, bpm FROM tracks
+               WHERE LOWER(COALESCE(title,  '')) LIKE LOWER(?)
+                  OR LOWER(COALESCE(artist, '')) LIKE LOWER(?)
+                  OR LOWER(COALESCE(album,  '')) LIKE LOWER(?)
+               ORDER BY id"#,
+        )
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind(&pattern)
+        .fetch_all(&self.pool)
+        .await
+        .context("list_tracks_filtered failed")?;
+        Ok(rows.iter().map(row_to_track).collect())
+    }
+
+    pub async fn list_tracks_in_dir_filtered(&self, dir: &str, needle: &str) -> Result<Vec<Track>> {
+        let prefix = if dir.ends_with('/') { dir.to_owned() } else { format!("{}/", dir) };
+        let pattern = format!("%{}%", needle);
+        let rows = sqlx::query(
+            r#"SELECT id, path, title, artist, album, duration_secs, bpm FROM tracks
+               WHERE path LIKE ? || '%'
+                 AND (LOWER(COALESCE(title,  '')) LIKE LOWER(?)
+                   OR LOWER(COALESCE(artist, '')) LIKE LOWER(?)
+                   OR LOWER(COALESCE(album,  '')) LIKE LOWER(?))
+               ORDER BY id"#,
+        )
+        .bind(&prefix)
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind(&pattern)
+        .fetch_all(&self.pool)
+        .await
+        .context("list_tracks_in_dir_filtered failed")?;
+        Ok(rows.iter().map(row_to_track).collect())
+    }
+
+    pub async fn list_tracks_in_playlist_filtered(
+        &self,
+        playlist_id: i64,
+        needle: &str,
+    ) -> Result<Vec<Track>> {
+        let pattern = format!("%{}%", needle);
+        let rows = sqlx::query(
+            r#"SELECT t.id, t.path, t.title, t.artist, t.album, t.duration_secs, t.bpm
+               FROM tracks t
+               JOIN playlist_tracks pt ON pt.track_id = t.id
+               WHERE pt.playlist_id = ?
+                 AND (LOWER(COALESCE(t.title,  '')) LIKE LOWER(?)
+                   OR LOWER(COALESCE(t.artist, '')) LIKE LOWER(?)
+                   OR LOWER(COALESCE(t.album,  '')) LIKE LOWER(?))
+               ORDER BY pt.position"#,
+        )
+        .bind(playlist_id)
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind(&pattern)
+        .fetch_all(&self.pool)
+        .await
+        .context("list_tracks_in_playlist_filtered failed")?;
+        Ok(rows.iter().map(row_to_track).collect())
+    }
+
+    pub async fn list_tracks_with_tag_filtered(
+        &self,
+        tag_id: i64,
+        needle: &str,
+    ) -> Result<Vec<Track>> {
+        let pattern = format!("%{}%", needle);
+        let rows = sqlx::query(
+            r#"SELECT t.id, t.path, t.title, t.artist, t.album, t.duration_secs, t.bpm
+               FROM tracks t
+               JOIN track_tags tt ON tt.track_id = t.id
+               WHERE tt.tag_id = ?
+                 AND (LOWER(COALESCE(t.title,  '')) LIKE LOWER(?)
+                   OR LOWER(COALESCE(t.artist, '')) LIKE LOWER(?)
+                   OR LOWER(COALESCE(t.album,  '')) LIKE LOWER(?))
+               ORDER BY t.id"#,
+        )
+        .bind(tag_id)
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind(&pattern)
+        .fetch_all(&self.pool)
+        .await
+        .context("list_tracks_with_tag_filtered failed")?;
         Ok(rows.iter().map(row_to_track).collect())
     }
 }

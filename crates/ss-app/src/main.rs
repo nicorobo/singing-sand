@@ -69,29 +69,81 @@ fn tracks_to_model_rc(tracks: &[Track]) -> slint::ModelRc<TrackItem> {
     ))
 }
 
-/// Spawn a background task that progressively fills in album art thumbnails.
-/// For each track with cached art, decodes a 44px buffer and updates that row
-/// in the window's current track model (verified by track ID to guard against
-/// nav changes that replace the model mid-load).
+/// In-memory cache of decoded 88px album art thumbnails, keyed by track ID.
+/// Shared across navigation so re-visiting a view is instant.
+type ArtCache = Arc<Mutex<HashMap<i64, slint::SharedPixelBuffer<slint::Rgb8Pixel>>>>;
+
+/// Spawn a background task that fills in album art thumbnails.
+/// Checks the in-memory cache first, then tries the pre-computed DB thumbnail
+/// (a tiny raw-RGB blob — no decode needed), and falls back to full JPEG/PNG
+/// decode + lazy save for tracks that don't have a thumbnail yet.
+/// All DB fetches are issued concurrently rather than sequentially.
 fn spawn_art_loader(
     tracks: Vec<Track>,
     weak: slint::Weak<AppWindow>,
     db: Arc<Db>,
     rt_handle: tokio::runtime::Handle,
+    art_cache: ArtCache,
 ) {
-    rt_handle.clone().spawn(async move {
-        for (i, track) in tracks.iter().enumerate() {
-            let track_id = track.id;
-            let bytes = match db.get_album_art(track_id).await {
-                Ok(Some(b)) => b,
-                _ => continue,
-            };
-            let buf = tokio::task::spawn_blocking(move || decode_art_buf(&bytes, 44))
-                .await
-                .ok()
-                .flatten();
-            let Some(buf) = buf else { continue };
+    rt_handle.spawn(async move {
+        // Phase 1: serve cached tracks immediately (no I/O).
+        {
+            let cache = art_cache.lock().unwrap();
+            for (i, track) in tracks.iter().enumerate() {
+                if let Some(buf) = cache.get(&track.id).cloned() {
+                    let weak = weak.clone();
+                    let track_id = track.id;
+                    let _ = slint::invoke_from_event_loop(move || {
+                        let Some(w) = weak.upgrade() else { return };
+                        let model = w.get_tracks();
+                        let Some(mut row) = model.row_data(i) else { return };
+                        if row.id == track_id as i32 {
+                            row.art = slint::Image::from_rgb8(buf);
+                            model.set_row_data(i, row);
+                        }
+                    });
+                }
+            }
+        }
 
+        // Phase 2: parallel fetch for uncached tracks.
+        let mut tasks = tokio::task::JoinSet::new();
+        for (i, track) in tracks.into_iter().enumerate() {
+            if art_cache.lock().unwrap().contains_key(&track.id) {
+                continue;
+            }
+            let db = Arc::clone(&db);
+            let cache = Arc::clone(&art_cache);
+            tasks.spawn(async move {
+                let track_id = track.id;
+                // Try the pre-computed 88px raw-RGB thumbnail first (no decode).
+                if let Ok(Some(bytes)) = db.get_thumbnail_44(track_id).await {
+                    if bytes.len() == (88 * 88 * 3) as usize {
+                        let mut buf = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(88, 88);
+                        buf.make_mut_bytes().copy_from_slice(&bytes);
+                        cache.lock().unwrap().insert(track_id, buf.clone());
+                        return Some((i, track_id, buf));
+                    }
+                }
+                // Fallback: decode full art, then save thumbnail lazily.
+                let art = match db.get_album_art(track_id).await {
+                    Ok(Some(b)) => b,
+                    _ => return None,
+                };
+                let mut buf =
+                    tokio::task::spawn_blocking(move || decode_art_buf(&art, 88)).await.ok().flatten()?;
+                let raw: Vec<u8> = buf.make_mut_bytes().to_vec();
+                let db2 = Arc::clone(&db);
+                tokio::spawn(async move {
+                    let _ = db2.save_thumbnail_44(track_id, &raw).await;
+                });
+                cache.lock().unwrap().insert(track_id, buf.clone());
+                Some((i, track_id, buf))
+            });
+        }
+
+        while let Some(result) = tasks.join_next().await {
+            let Some((i, track_id, buf)) = result.ok().flatten() else { continue };
             let weak = weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(w) = weak.upgrade() else { return };
@@ -601,11 +653,13 @@ fn cmd_gui() -> Result<()> {
 
     // ── Initial data load ────────────────────────────────────────────────────
 
+    let art_cache: ArtCache = Arc::new(Mutex::new(HashMap::new()));
+
     let initial_tracks = rt.block_on(db.list_tracks())?;
     window.set_tracks(tracks_to_model_rc(&initial_tracks));
     // Clone for art loader so the move into spawn_art_loader is independent.
     let initial_tracks_art = initial_tracks.clone();
-    spawn_art_loader(initial_tracks_art, window.as_weak(), Arc::clone(&db), rt_handle.clone());
+    spawn_art_loader(initial_tracks_art, window.as_weak(), Arc::clone(&db), rt_handle.clone(), Arc::clone(&art_cache));
 
     let dirs = rt.block_on(db.list_scanned_dirs())?;
 
@@ -854,11 +908,13 @@ fn cmd_gui() -> Result<()> {
         let db = Arc::clone(&db);
         let weak = window.as_weak();
         let rt_handle = rt_handle.clone();
+        let art_cache = Arc::clone(&art_cache);
         window.on_nav_all(move || {
             let db = Arc::clone(&db);
             let weak = weak.clone();
             let rth = rt_handle.clone();
             let rth2 = rth.clone();
+            let art_cache = Arc::clone(&art_cache);
             rth.spawn(async move {
                 let tracks = db.list_tracks().await.unwrap_or_default();
                 let tracks_for_ui = tracks.clone();
@@ -869,7 +925,7 @@ fn cmd_gui() -> Result<()> {
                         w.set_expanded_track_id(-1);
                     }
                 });
-                spawn_art_loader(tracks, weak, Arc::clone(&db), rth2);
+                spawn_art_loader(tracks, weak, Arc::clone(&db), rth2, art_cache);
             });
         });
     }
@@ -878,12 +934,14 @@ fn cmd_gui() -> Result<()> {
         let db = Arc::clone(&db);
         let weak = window.as_weak();
         let rt_handle = rt_handle.clone();
+        let art_cache = Arc::clone(&art_cache);
         window.on_nav_select_dir(move |dir_path| {
             let db = Arc::clone(&db);
             let weak = weak.clone();
             let rth = rt_handle.clone();
             let rth2 = rth.clone();
             let dir_str = dir_path.to_string();
+            let art_cache = Arc::clone(&art_cache);
             rth.spawn(async move {
                 let tracks = db.list_tracks_in_dir(&dir_str).await.unwrap_or_default();
                 let tracks_for_ui = tracks.clone();
@@ -894,7 +952,7 @@ fn cmd_gui() -> Result<()> {
                         w.set_expanded_track_id(-1);
                     }
                 });
-                spawn_art_loader(tracks, weak, Arc::clone(&db), rth2);
+                spawn_art_loader(tracks, weak, Arc::clone(&db), rth2, art_cache);
             });
         });
     }
@@ -903,11 +961,13 @@ fn cmd_gui() -> Result<()> {
         let db = Arc::clone(&db);
         let weak = window.as_weak();
         let rt_handle = rt_handle.clone();
+        let art_cache = Arc::clone(&art_cache);
         window.on_nav_playlist(move |playlist_id| {
             let db = Arc::clone(&db);
             let weak = weak.clone();
             let rth = rt_handle.clone();
             let rth2 = rth.clone();
+            let art_cache = Arc::clone(&art_cache);
             rth.spawn(async move {
                 let tracks =
                     db.list_tracks_in_playlist(playlist_id as i64).await.unwrap_or_default();
@@ -919,7 +979,7 @@ fn cmd_gui() -> Result<()> {
                         w.set_expanded_track_id(-1);
                     }
                 });
-                spawn_art_loader(tracks, weak, Arc::clone(&db), rth2);
+                spawn_art_loader(tracks, weak, Arc::clone(&db), rth2, art_cache);
             });
         });
     }
@@ -928,11 +988,13 @@ fn cmd_gui() -> Result<()> {
         let db = Arc::clone(&db);
         let weak = window.as_weak();
         let rt_handle = rt_handle.clone();
+        let art_cache = Arc::clone(&art_cache);
         window.on_nav_tag(move |tag_id| {
             let db = Arc::clone(&db);
             let weak = weak.clone();
             let rth = rt_handle.clone();
             let rth2 = rth.clone();
+            let art_cache = Arc::clone(&art_cache);
             rth.spawn(async move {
                 let tracks = db.list_tracks_with_tag(tag_id as i64).await.unwrap_or_default();
                 let tracks_for_ui = tracks.clone();
@@ -943,8 +1005,78 @@ fn cmd_gui() -> Result<()> {
                         w.set_expanded_track_id(-1);
                     }
                 });
-                spawn_art_loader(tracks, weak, Arc::clone(&db), rth2);
+                spawn_art_loader(tracks, weak, Arc::clone(&db), rth2, art_cache);
             });
+        });
+    }
+
+    // ── Search filter ────────────────────────────────────────────────────────
+
+    {
+        let db = Arc::clone(&db);
+        let weak = window.as_weak();
+        let rt_handle = rt_handle.clone();
+        let art_cache = Arc::clone(&art_cache);
+        window.on_search_filter_changed(move |filter_str| {
+            let db = Arc::clone(&db);
+            let weak = weak.clone();
+            let rth = rt_handle.clone();
+            let rth2 = rth.clone();
+            let art_cache = Arc::clone(&art_cache);
+            let needle = filter_str.to_string();
+
+            // Snapshot nav state on the Slint thread before spawning.
+            let (nav_kind, nav_id, nav_dir) = match weak.upgrade() {
+                Some(w) => (w.get_nav_kind(), w.get_nav_id(), w.get_nav_dir().to_string()),
+                None => return,
+            };
+
+            rth.spawn(async move {
+                let tracks = if needle.is_empty() {
+                    match nav_kind {
+                        0 => db.list_tracks().await.unwrap_or_default(),
+                        1 => db.list_tracks_in_dir(&nav_dir).await.unwrap_or_default(),
+                        2 => db.list_tracks_in_playlist(nav_id as i64).await.unwrap_or_default(),
+                        3 => db.list_tracks_with_tag(nav_id as i64).await.unwrap_or_default(),
+                        _ => vec![],
+                    }
+                } else {
+                    match nav_kind {
+                        0 => db.list_tracks_filtered(&needle).await.unwrap_or_default(),
+                        1 => db
+                            .list_tracks_in_dir_filtered(&nav_dir, &needle)
+                            .await
+                            .unwrap_or_default(),
+                        2 => db
+                            .list_tracks_in_playlist_filtered(nav_id as i64, &needle)
+                            .await
+                            .unwrap_or_default(),
+                        3 => db
+                            .list_tracks_with_tag_filtered(nav_id as i64, &needle)
+                            .await
+                            .unwrap_or_default(),
+                        _ => vec![],
+                    }
+                };
+                let tracks_for_ui = tracks.clone();
+                let weak2 = weak.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(w) = weak2.upgrade() {
+                        w.set_tracks(tracks_to_model_rc(&tracks_for_ui));
+                        w.set_expanded_track_id(-1);
+                    }
+                });
+                spawn_art_loader(tracks, weak, Arc::clone(&db), rth2, art_cache);
+            });
+        });
+    }
+
+    {
+        let weak = window.as_weak();
+        window.on_clear_search_filter(move || {
+            if let Some(w) = weak.upgrade() {
+                w.set_search_filter("".into());
+            }
         });
     }
 
