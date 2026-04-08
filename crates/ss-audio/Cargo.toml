@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ss-core  = { path = "../ss-core" }
+ss-core     = { path = "../ss-core" }
+ss-waveform = { path = "../ss-waveform" }
 # audio output — use symphonia as the decoder backend
 rodio    = { version = "0.20", default-features = false, features = ["symphonia-all"] }
 # direct symphonia access for waveform analysis and seek
@@ -15,4 +16,4 @@ crossbeam-channel = "0.5"
 anyhow   = { workspace = true }
 tracing  = { workspace = true }
 # FFT-based frequency-band analysis for waveform coloring
-spectrum-analyzer = "1.7"
+realfft = "3"

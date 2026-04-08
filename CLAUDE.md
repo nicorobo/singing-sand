@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-singing-sand is a Rust audio player and manager application.
+singing-sand is a Rust audio player and manager application, and a high-performance, lightning-fast DJ organization tool. Speed and responsiveness are first-class priorities — UI interactions should feel instant, analysis should be non-blocking, and rendering should never stall the event loop.
 
 ## Commands
 
@@ -93,10 +93,17 @@ Album art extracted from embedded tags during scan (lofty `pictures()`), stored 
 Key files: `crates/ss-db/migrations/0004_album_art.sql`, `crates/ss-db/src/lib.rs`, `crates/ss-library/src/lib.rs`, `crates/ss-app/src/main.rs`, `crates/ss-app/ui/main.slint`
 
 ### ✅ Phase 9 — BPM detection + frequency-band waveforms
-`analyze_track` (single Symphonia decode pass) replaces `analyze_waveform`. Per-bucket FFT via `spectrum-analyzer` produces [low/mid/high] RMS bands (20–250Hz / 250–4kHz / 4k–20kHz). BPM detected via energy-envelope autocorrelation (no external BPM lib — `bpm-analyzer` is device-capture only). Waveform rendered with additive colour blend (low=Peach, mid=Blue, high=Lavender). `AnalysisQueue` (long-lived tokio task + `UnboundedSender`) processes tracks missing a waveform or BPM; designed for future UI-driven directory imports. `pending-analysis-count` Slint property drives a "Analyzing N tracks…" bottom-right overlay. BPM shown in track-list rows and now-playing panel. Migration 0006 adds `bpm REAL` to tracks and clears waveforms (format change: `[f32×3×N]` interleaved).
+`analyze_track` (single Symphonia decode pass) replaces `analyze_waveform`. Per-bucket FFT via `realfft` (real-valued, N/2+1 output bins) produces [low/mid/high] RMS bands (20–250Hz / 250–4kHz / 4k–20kHz). BPM detected via energy-envelope autocorrelation (no external BPM lib — `bpm-analyzer` is device-capture only). Waveform rendered with additive colour blend (low=Peach, mid=Blue, high=Lavender). `AnalysisQueue` uses a `Semaphore`-bounded pool of `spawn_blocking` tasks (N = CPU count) for parallel analysis. `pending-analysis-count` Slint property drives a "Analyzing N tracks…" bottom-right overlay. BPM shown in track-list rows and now-playing panel. Migration 0006 adds `bpm REAL` to tracks and clears waveforms (format change: `[f32×3×N]` interleaved). FFT hop is non-overlapping (window cleared after each FFT) for 2× fewer FFT ops vs 50% overlap.
 Key files: `crates/ss-db/migrations/0006_bpm_waveform_v2.sql`, `crates/ss-audio/src/analyze.rs`, `crates/ss-db/src/lib.rs`, `crates/ss-app/src/main.rs`, `crates/ss-app/ui/main.slint`
 
 ## For a future version
+
+### ✅ Phase 11 — ss-waveform crate + settings window + persistent waveform controls
+`ss-waveform` crate owns `WaveformBucket`, `ViewPort`, `WaveformRenderSettings`, `DisplayStyle`, `ColorScheme`, `render_to_pixels` (pure fn), and `Renderer` (stateful cache). `WaveformBucket` moved from `ss-audio`; `ss-audio` re-exports it. Settings persisted in SQLite (`settings` table, migration 0007). `SettingsWindow` is a second OS-level Slint `Window` instantiated from Rust, opened via gear icon in sidebar footer. All 10 waveform settings: band toggles (low/mid/high), amplitude scale, per-band gain (low/mid/high), display style (Mirrored/TopHalf), color scheme (4 options), normalize. Changes re-render waveform instantly and persist async.
+Key files: `crates/ss-waveform/`, `crates/ss-db/migrations/0007_settings.sql`, `crates/ss-db/src/lib.rs`, `crates/ss-app/src/settings.rs`, `crates/ss-app/ui/settings.slint`, `crates/ss-app/ui/main.slint`, `crates/ss-app/src/main.rs`
+
+**Implementation note:** Slint 1.x does not support Window components nested inside other Window components. `SettingsWindow` is instantiated separately via `SettingsWindow::new()` in Rust and wrapped in `Arc`. Opened via `settings_win.show()` from the `on_settings_clicked` callback.
+
 ### ⬜ Phase 8 — Waveform thumbnails
 Per-track thumbnail in list view; click to seek/play.
 

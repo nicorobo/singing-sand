@@ -1,4 +1,8 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
 
 use anyhow::{Context, Result};
 use slint::Model as _;
@@ -7,7 +11,11 @@ use tracing::info;
 use ss_audio::{analyze_track, AudioEngine};
 use ss_core::{AudioCommand, AudioEvent, Track};
 use ss_db::Db;
-use ss_library::Scanner;
+use ss_library::{FileWatcher, LibraryEvent, Scanner};
+use ss_waveform::{render_to_pixels, ViewPort, WaveformBucket, WaveformRenderSettings};
+
+mod settings;
+use settings::{load_settings, save_settings, AppSettings};
 
 slint::include_modules!();
 
@@ -31,50 +39,6 @@ async fn open_db() -> Result<Arc<Db>> {
     Ok(Arc::new(db))
 }
 
-/// Render frequency-band waveform data into a `SharedPixelBuffer`.
-///
-/// Each bucket is `[low_rms, mid_rms, high_rms]`. The bar height is the mean
-/// amplitude and its color is an additive blend of three band colors:
-///   Low  → Catppuccin Peach    rgb(250, 179, 135)
-///   Mid  → Catppuccin Blue     rgb(137, 180, 250)  (legacy colour)
-///   High → Catppuccin Lavender rgb(203, 166, 247)
-fn render_waveform_buffer(bands: &[[f32; 3]]) -> slint::SharedPixelBuffer<slint::Rgb8Pixel> {
-    const W: u32 = 1000;
-    const H: u32 = 96;
-    let bg = slint::Rgb8Pixel { r: 24, g: 24, b: 37 };
-
-    let mut buf = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(W, H);
-    let pixels = buf.make_mut_slice();
-    for p in pixels.iter_mut() {
-        *p = bg;
-    }
-
-    for x in 0..W as usize {
-        let bucket = (x * bands.len()) / W as usize;
-        let [low, mid, high] = bands.get(bucket).copied().unwrap_or([0.0; 3]);
-
-        // Bar height driven by mean amplitude.
-        let amplitude = ((low + mid + high) / 3.0).clamp(0.0, 1.0);
-        let bar_half = ((amplitude * H as f32) / 2.0) as usize;
-        let center = H as usize / 2;
-        let top = center.saturating_sub(bar_half);
-        let bottom = (center + bar_half).min(H as usize);
-
-        // Additive-blend color: weighted average of band colours.
-        let total = low + mid + high + 1e-6;
-        let r = ((low * 250.0 + mid * 137.0 + high * 203.0) / total) as u8;
-        let g = ((low * 179.0 + mid * 180.0 + high * 166.0) / total) as u8;
-        let b = ((low * 135.0 + mid * 250.0 + high * 247.0) / total) as u8;
-        let bar_color = slint::Rgb8Pixel { r, g, b };
-
-        for y in top..bottom {
-            pixels[y * W as usize + x] = bar_color;
-        }
-    }
-
-    buf
-}
-
 /// Decode raw JPEG/PNG bytes and resize to `size × size`.
 /// Returns a `SharedPixelBuffer` (Send) so this can be called in `spawn_blocking`.
 /// Call `slint::Image::from_rgb8(buf)` on the Slint thread to get an Image.
@@ -95,7 +59,6 @@ fn track_to_item(t: &Track) -> TrackItem {
         artist: t.artist.clone().unwrap_or_default().into(),
         album: t.album.clone().unwrap_or_default().into(),
         duration_secs: t.duration_secs.unwrap_or(0.0) as f32,
-        bpm: t.bpm.unwrap_or(0.0),
         art: slint::Image::default(),
     }
 }
@@ -149,6 +112,8 @@ async fn start_playback(
     db: Arc<Db>,
     engine: Arc<AudioEngine>,
     weak: slint::Weak<AppWindow>,
+    render_settings: Arc<Mutex<WaveformRenderSettings>>,
+    current_bands: Arc<Mutex<Vec<WaveformBucket>>>,
 ) {
     let track = match db.get_track(track_id).await {
         Ok(Some(t)) => t,
@@ -170,7 +135,6 @@ async fn start_playback(
     let duration = track.duration_secs.unwrap_or(0.0) as f32;
     let now_title: slint::SharedString = track.title.clone().unwrap_or_default().into();
     let now_artist: slint::SharedString = track.artist.clone().unwrap_or_default().into();
-    let now_bpm = track.bpm.unwrap_or(0.0);
 
     // Load tag chips.
     let all_tags = db.list_tags().await.unwrap_or_default();
@@ -212,7 +176,6 @@ async fn start_playback(
             w.set_now_playing_art(now_art);
             w.set_now_playing_title(now_title_clone);
             w.set_now_playing_artist(now_artist_clone);
-            w.set_now_playing_bpm(now_bpm);
         }
     });
 
@@ -229,20 +192,6 @@ async fn start_playback(
                     if let Err(e) = db.save_waveform_bands(track_id, &arrays).await {
                         tracing::warn!("failed to cache waveform bands: {e}");
                     }
-                    // Save BPM if not already set.
-                    if track.bpm.is_none() && result.bpm > 0.0 {
-                        if let Err(e) = db.save_bpm(track_id, result.bpm).await {
-                            tracing::warn!("failed to save bpm: {e}");
-                        }
-                        // Update BPM in now-playing panel.
-                        let bpm = result.bpm;
-                        let weak3 = weak.clone();
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(w) = weak3.upgrade() {
-                                w.set_now_playing_bpm(bpm);
-                            }
-                        });
-                    }
                     arrays
                 }
                 _ => vec![],
@@ -250,10 +199,118 @@ async fn start_playback(
         }
     };
 
-    let pixel_buf = render_waveform_buffer(&bands);
+    // Convert [f32;3] arrays → WaveformBucket for rendering.
+    let buckets: Vec<WaveformBucket> =
+        bands.iter().map(|&arr| WaveformBucket::from_array(arr)).collect();
+    *current_bands.lock().unwrap() = buckets.clone();
+
+    let settings_snap = render_settings.lock().unwrap().clone();
+    let pixel_buf = render_to_pixels(&buckets, &settings_snap, ViewPort::default());
+
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(w) = weak.upgrade() {
             w.set_waveform_image(slint::Image::from_rgb8(pixel_buf));
+        }
+    });
+}
+
+/// Returns an error message if `path` is already covered by any of `existing` roots,
+/// either as an exact match, a child, or a parent.
+fn check_duplicate_dir(path: &str, existing: &[PathBuf]) -> Option<String> {
+    let p = path.trim_end_matches('/');
+    for r in existing {
+        let r_str = r.to_string_lossy();
+        let r = r_str.trim_end_matches('/');
+        if p == r || p.starts_with(&format!("{r}/")) || r.starts_with(&format!("{p}/")) {
+            return Some("This directory is already in your library.".into());
+        }
+    }
+    None
+}
+
+/// Recursively append a directory node (and its expanded children) to `result`.
+fn append_dir_node(
+    result: &mut Vec<DirTreeItem>,
+    dir: &str,
+    all_dirs: &[&str],
+    indent: i32,
+    expanded: &HashMap<String, bool>,
+    is_root: bool,
+) {
+    let prefix = format!("{dir}/");
+    let direct_children: Vec<&str> = all_dirs
+        .iter()
+        .copied()
+        .filter(|&d| d.starts_with(&prefix) && !d[prefix.len()..].contains('/'))
+        .collect();
+
+    let has_children = !direct_children.is_empty();
+    let is_expanded = expanded.get(dir).copied().unwrap_or(false);
+
+    let name: slint::SharedString = Path::new(dir)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| dir.to_string())
+        .into();
+
+    result.push(DirTreeItem {
+        path: dir.to_string().into(),
+        name,
+        indent: indent.min(4),
+        has_children,
+        is_expanded,
+        is_root,
+    });
+
+    if is_expanded {
+        for child in direct_children {
+            append_dir_node(result, child, all_dirs, indent + 1, expanded, false);
+        }
+    }
+}
+
+/// Build the flat `DirTreeItem` list from scanned roots and track directory paths.
+fn build_dir_tree_items(
+    roots: &[PathBuf],
+    track_dirs: &HashSet<String>,
+    expanded: &HashMap<String, bool>,
+) -> Vec<DirTreeItem> {
+    let mut sorted: Vec<&str> = track_dirs.iter().map(|s| s.as_str()).collect();
+    sorted.sort_unstable();
+
+    let mut result = Vec::new();
+    for root in roots {
+        let root_str = root.to_string_lossy();
+        append_dir_node(&mut result, root_str.as_ref(), &sorted, 0, expanded, true);
+    }
+    result
+}
+
+/// Unique parent directories for all tracks (used to build the sidebar tree).
+fn track_dirs_from(tracks: &[Track]) -> HashSet<String> {
+    tracks
+        .iter()
+        .filter_map(|t| t.path.parent().map(|p| p.to_string_lossy().into_owned()))
+        .collect()
+}
+
+/// Rebuild the dir tree from the DB and push the new list to the Slint UI.
+async fn refresh_dir_tree(
+    db: &Arc<Db>,
+    weak: &slint::Weak<AppWindow>,
+    expanded: &Arc<Mutex<HashMap<String, bool>>>,
+) {
+    let dirs = db.list_scanned_dirs().await.unwrap_or_default();
+    let all_tracks = db.list_tracks().await.unwrap_or_default();
+    let tdirs = track_dirs_from(&all_tracks);
+    let items = {
+        let exp = expanded.lock().unwrap();
+        build_dir_tree_items(&dirs, &tdirs, &exp)
+    };
+    let weak = weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(w) = weak.upgrade() {
+            w.set_dir_tree_items(slint::ModelRc::new(slint::VecModel::from(items)));
         }
     });
 }
@@ -297,17 +354,13 @@ async fn cmd_scan(dir: PathBuf) -> Result<()> {
         stats.upserted, stats.errors, stats.skipped
     );
 
-    // Analyse new tracks: generate frequency-band waveforms and detect BPM.
+    // Analyse new tracks: generate frequency-band waveforms.
     let mut analysed = 0usize;
     let mut analysis_errors = 0usize;
     for (track_id, path) in stats.upserted_tracks {
-        // Skip if both waveform and BPM are already cached.
+        // Skip if waveform is already cached.
         let has_waveform = matches!(db.get_waveform_bands(track_id).await, Ok(Some(_)));
-        let has_bpm = matches!(
-            db.get_track(track_id).await,
-            Ok(Some(ref t)) if t.bpm.is_some()
-        );
-        if has_waveform && has_bpm {
+        if has_waveform {
             continue;
         }
 
@@ -319,11 +372,6 @@ async fn cmd_scan(dir: PathBuf) -> Result<()> {
                     tracing::warn!(track_id, error = %e, "failed to save waveform bands");
                     analysis_errors += 1;
                     continue;
-                }
-                if result.bpm > 0.0 {
-                    if let Err(e) = db.save_bpm(track_id, result.bpm).await {
-                        tracing::warn!(track_id, error = %e, "failed to save bpm");
-                    }
                 }
                 analysed += 1;
             }
@@ -378,12 +426,14 @@ fn cmd_play_cli(path: PathBuf) -> Result<()> {
 
 /// Long-lived background analysis queue.
 ///
-/// Send `(track_id, path)` pairs via [`AnalysisQueue::enqueue`]. A single
-/// tokio task drains the queue sequentially, running FFT + BPM analysis for
-/// each track and saving results to the DB. The Slint `pending-analysis-count`
-/// property is updated in real-time via `invoke_from_event_loop`.
+/// Send `(track_id, path)` pairs via [`AnalysisQueue::enqueue`]. A pool of up
+/// to N concurrent tokio `spawn_blocking` tasks (where N = CPU count) processes
+/// the queue in parallel. The Slint `pending-analysis-count` property is
+/// updated in real-time via `invoke_from_event_loop`.
 struct AnalysisQueue {
     tx: tokio::sync::mpsc::UnboundedSender<(i64, std::path::PathBuf)>,
+    pending: Arc<std::sync::atomic::AtomicUsize>,
+    weak: slint::Weak<AppWindow>,
 }
 
 impl AnalysisQueue {
@@ -395,61 +445,59 @@ impl AnalysisQueue {
         let (tx, mut rx) =
             tokio::sync::mpsc::unbounded_channel::<(i64, std::path::PathBuf)>();
         let pending = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let pending_for_struct = Arc::clone(&pending);
+        let weak_for_struct = weak.clone();
 
         rt.spawn(async move {
+            let parallelism = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4);
+            let sem = Arc::new(tokio::sync::Semaphore::new(parallelism));
+
             while let Some((track_id, path)) = rx.recv().await {
-                let count = pending.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                update_analysis_counter(&weak, count);
+                // Acquire a slot; blocks the loop (and stops reading the channel)
+                // when all workers are busy, providing natural backpressure.
+                let permit = Arc::clone(&sem).acquire_owned().await.unwrap();
+                let db2 = Arc::clone(&db);
+                let weak2 = weak.clone();
+                let pending2 = Arc::clone(&pending);
 
-                let result =
-                    tokio::task::spawn_blocking(move || analyze_track(&path, 1000)).await;
+                tokio::spawn(async move {
+                    let _permit = permit; // released when this task completes
 
-                match result {
-                    Ok(Ok(analysis)) => {
-                        let arrays: Vec<[f32; 3]> =
-                            analysis.waveform.iter().map(|b| b.to_array()).collect();
-                        if let Err(e) = db.save_waveform_bands(track_id, &arrays).await {
-                            tracing::warn!(track_id, error = %e, "analysis: save waveform failed");
-                        }
-                        if analysis.bpm > 0.0 {
-                            if let Err(e) = db.save_bpm(track_id, analysis.bpm).await {
-                                tracing::warn!(track_id, error = %e, "analysis: save bpm failed");
+                    let result =
+                        tokio::task::spawn_blocking(move || analyze_track(&path, 1000)).await;
+
+                    match result {
+                        Ok(Ok(analysis)) => {
+                            let arrays: Vec<[f32; 3]> =
+                                analysis.waveform.iter().map(|b| b.to_array()).collect();
+                            if let Err(e) = db2.save_waveform_bands(track_id, &arrays).await {
+                                tracing::warn!(track_id, error = %e, "analysis: save waveform failed");
                             }
-                            // Update BPM in track list row if it's currently visible.
-                            let bpm = analysis.bpm;
-                            let weak2 = weak.clone();
-                            let _ = slint::invoke_from_event_loop(move || {
-                                let Some(w) = weak2.upgrade() else { return };
-                                let model = w.get_tracks();
-                                if let Some(idx) = (0..model.row_count())
-                                    .find(|&i| model.row_data(i).map(|r| r.id) == Some(track_id as i32))
-                                {
-                                    if let Some(mut row) = model.row_data(idx) {
-                                        row.bpm = bpm;
-                                        model.set_row_data(idx, row);
-                                    }
-                                }
-                            });
+                        }
+                        Ok(Err(e)) => {
+                            tracing::warn!(track_id, error = %e, "analysis failed");
+                        }
+                        Err(e) => {
+                            tracing::warn!(track_id, error = %e, "analysis task panicked");
                         }
                     }
-                    Ok(Err(e)) => {
-                        tracing::warn!(track_id, error = %e, "analysis failed");
-                    }
-                    Err(e) => {
-                        tracing::warn!(track_id, error = %e, "analysis task panicked");
-                    }
-                }
 
-                let remaining = pending.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) - 1;
-                update_analysis_counter(&weak, remaining);
+                    let remaining =
+                        pending2.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) - 1;
+                    update_analysis_counter(&weak2, remaining);
+                });
             }
         });
 
-        Self { tx }
+        Self { tx, pending: pending_for_struct, weak: weak_for_struct }
     }
 
     fn enqueue(&self, tracks: impl IntoIterator<Item = (i64, std::path::PathBuf)>) {
         for item in tracks {
+            let count = self.pending.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            update_analysis_counter(&self.weak, count);
             let _ = self.tx.send(item);
         }
     }
@@ -461,6 +509,58 @@ fn update_analysis_counter(weak: &slint::Weak<AppWindow>, count: usize) {
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(w) = weak.upgrade() {
             w.set_pending_analysis_count(count as i32);
+        }
+    });
+}
+
+fn display_style_to_int(s: ss_waveform::DisplayStyle) -> i32 {
+    match s {
+        ss_waveform::DisplayStyle::Mirrored => 0,
+        ss_waveform::DisplayStyle::TopHalf  => 1,
+    }
+}
+
+fn int_to_display_style(v: i32) -> ss_waveform::DisplayStyle {
+    match v {
+        1 => ss_waveform::DisplayStyle::TopHalf,
+        _ => ss_waveform::DisplayStyle::Mirrored,
+    }
+}
+
+fn color_scheme_to_int(s: ss_waveform::ColorScheme) -> i32 {
+    match s {
+        ss_waveform::ColorScheme::AdditivePeachBlueLavender => 0,
+        ss_waveform::ColorScheme::Monochrome                => 1,
+        ss_waveform::ColorScheme::PerBandSolid              => 2,
+        ss_waveform::ColorScheme::Grayscale                 => 3,
+    }
+}
+
+fn int_to_color_scheme(v: i32) -> ss_waveform::ColorScheme {
+    match v {
+        1 => ss_waveform::ColorScheme::Monochrome,
+        2 => ss_waveform::ColorScheme::PerBandSolid,
+        3 => ss_waveform::ColorScheme::Grayscale,
+        _ => ss_waveform::ColorScheme::AdditivePeachBlueLavender,
+    }
+}
+
+/// Re-render the waveform with current settings and push it to the UI.
+fn rerender_waveform(
+    render_settings: &Arc<Mutex<WaveformRenderSettings>>,
+    current_bands: &Arc<Mutex<Vec<WaveformBucket>>>,
+    weak: &slint::Weak<AppWindow>,
+) {
+    let bands = current_bands.lock().unwrap().clone();
+    if bands.is_empty() {
+        return;
+    }
+    let s = render_settings.lock().unwrap().clone();
+    let buf = render_to_pixels(&bands, &s, ViewPort::default());
+    let weak = weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(w) = weak.upgrade() {
+            w.set_waveform_image(slint::Image::from_rgb8(buf));
         }
     });
 }
@@ -477,6 +577,28 @@ fn cmd_gui() -> Result<()> {
     let window = AppWindow::new().context("failed to create window")?;
     let rt_handle = rt.handle().clone();
 
+    // ── Load persisted settings ──────────────────────────────────────────────
+    let app_settings = rt.block_on(load_settings(&db)).unwrap_or_default();
+    let render_settings = Arc::new(Mutex::new(app_settings.waveform.clone()));
+    let current_bands: Arc<Mutex<Vec<WaveformBucket>>> = Arc::new(Mutex::new(vec![]));
+
+    // Create the settings window (separate OS window, shown on demand).
+    let settings_win = SettingsWindow::new().context("failed to create settings window")?;
+    {
+        let w = &app_settings.waveform;
+        settings_win.set_show_low(w.show_low);
+        settings_win.set_show_mid(w.show_mid);
+        settings_win.set_show_high(w.show_high);
+        settings_win.set_amplitude_scale(w.amplitude_scale);
+        settings_win.set_low_gain(w.low_gain);
+        settings_win.set_mid_gain(w.mid_gain);
+        settings_win.set_high_gain(w.high_gain);
+        settings_win.set_display_style(display_style_to_int(w.display_style));
+        settings_win.set_color_scheme(color_scheme_to_int(w.color_scheme));
+        settings_win.set_normalize(w.normalize);
+    }
+    let settings_win = Arc::new(settings_win);
+
     // ── Initial data load ────────────────────────────────────────────────────
 
     let initial_tracks = rt.block_on(db.list_tracks())?;
@@ -486,19 +608,15 @@ fn cmd_gui() -> Result<()> {
     spawn_art_loader(initial_tracks_art, window.as_weak(), Arc::clone(&db), rt_handle.clone());
 
     let dirs = rt.block_on(db.list_scanned_dirs())?;
-    let dir_names: Vec<slint::SharedString> = dirs
-        .iter()
-        .map(|p| {
-            p.file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| p.to_string_lossy().into_owned())
-                .into()
-        })
-        .collect();
-    let dir_paths: Vec<slint::SharedString> =
-        dirs.iter().map(|p| p.to_string_lossy().into_owned().into()).collect();
-    window.set_sidebar_dir_names(slint::ModelRc::new(slint::VecModel::from(dir_names)));
-    window.set_sidebar_dir_paths(slint::ModelRc::new(slint::VecModel::from(dir_paths)));
+
+    // Build initial directory tree from existing tracks
+    let expanded_state = Arc::new(Mutex::new(HashMap::<String, bool>::new()));
+    {
+        let tdirs = track_dirs_from(&initial_tracks);
+        let exp = expanded_state.lock().unwrap();
+        let tree_items = build_dir_tree_items(&dirs, &tdirs, &exp);
+        window.set_dir_tree_items(slint::ModelRc::new(slint::VecModel::from(tree_items)));
+    }
 
     let playlists = rt.block_on(db.list_playlists())?;
     let pl_entries: Vec<SidebarEntry> = playlists
@@ -535,6 +653,199 @@ fn cmd_gui() -> Result<()> {
         let needs_analysis = rt.block_on(db.list_tracks_needing_analysis()).unwrap_or_default();
         info!("{} tracks queued for background analysis", needs_analysis.len());
         analysis_queue.enqueue(needs_analysis);
+    }
+
+    // ── File watcher ─────────────────────────────────────────────────────────
+
+    let (lib_event_tx, lib_event_rx) =
+        tokio::sync::mpsc::unbounded_channel::<LibraryEvent>();
+
+    let mut fw = FileWatcher::new(
+        Arc::clone(&db),
+        rt_handle.clone(),
+        lib_event_tx,
+    )?;
+    for dir in &dirs {
+        if let Err(e) = fw.watch(dir) {
+            tracing::warn!("failed to watch {}: {e}", dir.display());
+        }
+    }
+    let file_watcher = Arc::new(Mutex::new(fw));
+
+    // Spawn a task that reacts to library events from the file watcher
+    {
+        let db = Arc::clone(&db);
+        let weak = window.as_weak();
+        let expanded = Arc::clone(&expanded_state);
+        let aq = Arc::clone(&analysis_queue);
+        let mut lib_event_rx = lib_event_rx;
+        rt_handle.spawn(async move {
+            while let Some(event) = lib_event_rx.recv().await {
+                match event {
+                    LibraryEvent::TrackAdded { id, path } => {
+                        aq.enqueue(std::iter::once((id, path)));
+                    }
+                    LibraryEvent::TrackRemoved(_) => {}
+                }
+                // Refresh dir tree and current track list view
+                refresh_dir_tree(&db, &weak, &expanded).await;
+                let _ = slint::invoke_from_event_loop({
+                    let weak = weak.clone();
+                    move || {
+                        let Some(w) = weak.upgrade() else { return };
+                        match w.get_nav_kind() {
+                            0 => { w.invoke_nav_all(); }
+                            1 => { w.invoke_nav_select_dir(w.get_nav_dir()); }
+                            2 => { w.invoke_nav_playlist(w.get_nav_id()); }
+                            3 => { w.invoke_nav_tag(w.get_nav_id()); }
+                            _ => {}
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    // ── Directory management callbacks ───────────────────────────────────────
+
+    {
+        let db = Arc::clone(&db);
+        let weak = window.as_weak();
+        let rt_handle = rt_handle.clone();
+        let expanded = Arc::clone(&expanded_state);
+        let aq = Arc::clone(&analysis_queue);
+        let fw = Arc::clone(&file_watcher);
+        window.on_add_directory_clicked(move || {
+            let db = Arc::clone(&db);
+            let weak = weak.clone();
+            let expanded = Arc::clone(&expanded);
+            let aq = Arc::clone(&aq);
+            let fw = Arc::clone(&fw);
+            rt_handle.spawn(async move {
+                let Some(folder) = rfd::AsyncFileDialog::new().pick_folder().await else {
+                    return;
+                };
+                let path = folder.path().to_path_buf();
+                let path_str = path.to_string_lossy().to_string();
+
+                // Duplicate check
+                let existing = db.list_scanned_dirs().await.unwrap_or_default();
+                if let Some(msg) = check_duplicate_dir(&path_str, &existing) {
+                    let msg: slint::SharedString = msg.into();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(w) = weak.upgrade() {
+                            w.set_dir_duplicate_message(msg);
+                            w.set_show_dir_duplicate_dialog(true);
+                        }
+                    });
+                    return;
+                }
+
+                // Scan + record in DB
+                let scanner = Scanner::new(Arc::clone(&db));
+                match scanner.scan_dir(&path).await {
+                    Ok(stats) => {
+                        info!(
+                            "added dir {path_str} — {} upserted, {} errors",
+                            stats.upserted, stats.errors
+                        );
+                        aq.enqueue(stats.upserted_tracks);
+                    }
+                    Err(e) => tracing::warn!("scan_dir failed for {path_str}: {e}"),
+                }
+
+                // Start watching the new directory
+                if let Ok(mut fw) = fw.lock() {
+                    if let Err(e) = fw.watch(&path) {
+                        tracing::warn!("watch failed for {path_str}: {e}");
+                    }
+                }
+
+                // Refresh the sidebar tree and trigger a nav reload
+                refresh_dir_tree(&db, &weak, &expanded).await;
+                let _ = slint::invoke_from_event_loop({
+                    let weak = weak.clone();
+                    move || {
+                        let Some(w) = weak.upgrade() else { return };
+                        if w.get_nav_kind() == 0 {
+                            w.invoke_nav_all();
+                        }
+                    }
+                });
+            });
+        });
+    }
+
+    {
+        let expanded = Arc::clone(&expanded_state);
+        let db = Arc::clone(&db);
+        let weak = window.as_weak();
+        let rt_handle = rt_handle.clone();
+        window.on_toggle_dir_expanded(move |path| {
+            let path_str = path.to_string();
+            {
+                let mut exp = expanded.lock().unwrap();
+                let e = exp.entry(path_str).or_insert(false);
+                *e = !*e;
+            }
+            let db = Arc::clone(&db);
+            let weak = weak.clone();
+            let expanded = Arc::clone(&expanded);
+            rt_handle.spawn(async move {
+                refresh_dir_tree(&db, &weak, &expanded).await;
+            });
+        });
+    }
+
+    {
+        let db = Arc::clone(&db);
+        let weak = window.as_weak();
+        let rt_handle = rt_handle.clone();
+        let expanded = Arc::clone(&expanded_state);
+        let fw = Arc::clone(&file_watcher);
+        window.on_remove_scanned_dir(move |path| {
+            let db = Arc::clone(&db);
+            let weak = weak.clone();
+            let expanded = Arc::clone(&expanded);
+            let fw = Arc::clone(&fw);
+            let path_str = path.to_string();
+            rt_handle.spawn(async move {
+                // Delete all tracks under this root
+                let tracks = db.list_tracks_in_dir(&path_str).await.unwrap_or_default();
+                for t in &tracks {
+                    if let Err(e) =
+                        db.delete_track_by_path(&t.path.to_string_lossy()).await
+                    {
+                        tracing::warn!("delete_track failed: {e}");
+                    }
+                }
+                if let Err(e) = db.remove_scanned_dir(&path_str).await {
+                    tracing::warn!("remove_scanned_dir failed: {e}");
+                }
+                // Stop watching
+                if let Ok(mut fw) = fw.lock() {
+                    let _ = fw.unwatch(Path::new(&path_str));
+                }
+                // Remove from expanded state
+                expanded.lock().unwrap().remove(&path_str);
+                // Rebuild tree
+                refresh_dir_tree(&db, &weak, &expanded).await;
+                // If currently viewing the removed dir, switch to All Tracks
+                let _ = slint::invoke_from_event_loop({
+                    let weak = weak.clone();
+                    move || {
+                        let Some(w) = weak.upgrade() else { return };
+                        if w.get_nav_kind() == 1 && w.get_nav_dir() == path_str.as_str() {
+                            w.set_nav_kind(0);
+                            w.set_nav_dir("".into());
+                            w.invoke_nav_all();
+                        } else if w.get_nav_kind() == 0 {
+                            w.invoke_nav_all();
+                        }
+                    }
+                });
+            });
+        });
     }
 
     // ── Nav callbacks ────────────────────────────────────────────────────────
@@ -965,11 +1276,15 @@ fn cmd_gui() -> Result<()> {
         let db = Arc::clone(&db);
         let weak = window.as_weak();
         let rt_handle = rt_handle.clone();
+        let render_settings = Arc::clone(&render_settings);
+        let current_bands = Arc::clone(&current_bands);
         window.on_play_track(move |id| {
             let engine = Arc::clone(&engine);
             let db = Arc::clone(&db);
             let weak = weak.clone();
-            rt_handle.spawn(start_playback(id as i64, db, engine, weak));
+            let rs = Arc::clone(&render_settings);
+            let cb = Arc::clone(&current_bands);
+            rt_handle.spawn(start_playback(id as i64, db, engine, weak, rs, cb));
         });
     }
 
@@ -980,18 +1295,22 @@ fn cmd_gui() -> Result<()> {
         let db = Arc::clone(&db);
         let weak = window.as_weak();
         let rt_handle = rt_handle.clone();
+        let render_settings = Arc::clone(&render_settings);
+        let current_bands = Arc::clone(&current_bands);
         window.on_next_track(move || {
             let engine = Arc::clone(&engine);
             let db = Arc::clone(&db);
             let weak = weak.clone();
             let rt_handle = rt_handle.clone();
+            let rs = Arc::clone(&render_settings);
+            let cb = Arc::clone(&current_bands);
             if let Some(w) = weak.upgrade() {
                 let tracks = w.get_tracks();
                 let current = w.get_current_track_id();
                 if let Some(next_id) = find_adjacent_track(&tracks, current, 1) {
                     w.set_current_track_id(next_id);
                     w.set_is_playing(true);
-                    rt_handle.spawn(start_playback(next_id as i64, db, engine, weak));
+                    rt_handle.spawn(start_playback(next_id as i64, db, engine, weak, rs, cb));
                 }
             }
         });
@@ -1002,18 +1321,22 @@ fn cmd_gui() -> Result<()> {
         let db = Arc::clone(&db);
         let weak = window.as_weak();
         let rt_handle = rt_handle.clone();
+        let render_settings = Arc::clone(&render_settings);
+        let current_bands = Arc::clone(&current_bands);
         window.on_prev_track(move || {
             let engine = Arc::clone(&engine);
             let db = Arc::clone(&db);
             let weak = weak.clone();
             let rt_handle = rt_handle.clone();
+            let rs = Arc::clone(&render_settings);
+            let cb = Arc::clone(&current_bands);
             if let Some(w) = weak.upgrade() {
                 let tracks = w.get_tracks();
                 let current = w.get_current_track_id();
                 if let Some(prev_id) = find_adjacent_track(&tracks, current, -1) {
                     w.set_current_track_id(prev_id);
                     w.set_is_playing(true);
-                    rt_handle.spawn(start_playback(prev_id as i64, db, engine, weak));
+                    rt_handle.spawn(start_playback(prev_id as i64, db, engine, weak, rs, cb));
                 }
             }
         });
@@ -1044,6 +1367,46 @@ fn cmd_gui() -> Result<()> {
             }
         });
     }
+
+    // ── Settings window callbacks ────────────────────────────────────────────
+
+    {
+        let settings_win_weak: Arc<SettingsWindow> = Arc::clone(&settings_win);
+        window.on_settings_clicked(move || {
+            settings_win_weak.show().ok();
+        });
+    }
+
+    macro_rules! settings_cb {
+        ($method:ident, $field:ident, $val_ty:ty, $convert:expr) => {{
+            let render_settings = Arc::clone(&render_settings);
+            let current_bands = Arc::clone(&current_bands);
+            let weak = window.as_weak();
+            let db = Arc::clone(&db);
+            let rt_handle = rt_handle.clone();
+            settings_win.$method(move |val| {
+                let converted: $val_ty = ($convert)(val);
+                render_settings.lock().unwrap().$field = converted;
+                rerender_waveform(&render_settings, &current_bands, &weak);
+                let s = render_settings.lock().unwrap().clone();
+                let db = Arc::clone(&db);
+                rt_handle.spawn(async move {
+                    let _ = save_settings(&db, &AppSettings { waveform: s }).await;
+                });
+            });
+        }};
+    }
+
+    settings_cb!(on_show_low_changed,        show_low,        bool, |v| v);
+    settings_cb!(on_show_mid_changed,        show_mid,        bool, |v| v);
+    settings_cb!(on_show_high_changed,       show_high,       bool, |v| v);
+    settings_cb!(on_amplitude_scale_changed, amplitude_scale, f32,  |v| v);
+    settings_cb!(on_low_gain_changed,        low_gain,        f32,  |v| v);
+    settings_cb!(on_mid_gain_changed,        mid_gain,        f32,  |v| v);
+    settings_cb!(on_high_gain_changed,       high_gain,       f32,  |v| v);
+    settings_cb!(on_display_style_changed,   display_style,   ss_waveform::DisplayStyle, |v: i32| int_to_display_style(v));
+    settings_cb!(on_color_scheme_changed,    color_scheme,    ss_waveform::ColorScheme,  |v: i32| int_to_color_scheme(v));
+    settings_cb!(on_normalize_changed,       normalize,       bool, |v| v);
 
     // ── Audio event forwarding ───────────────────────────────────────────────
 

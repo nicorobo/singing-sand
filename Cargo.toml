@@ -6,6 +6,7 @@ members = [
     "crates/ss-library",
     "crates/ss-api",
     "crates/ss-app",
+    "crates/ss-waveform",
 ]
 resolver = "2"
 
@@ -32,3 +33,5 @@ lofty   = "0.22"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 # GUI
 slint = "1"
+# waveform rendering
+ss-waveform = { path = "crates/ss-waveform" }

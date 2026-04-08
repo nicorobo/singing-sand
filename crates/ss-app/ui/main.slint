@@ -1,4 +1,6 @@
 import { Button, ListView, LineEdit, ScrollView } from "std-widgets.slint";
+import { SettingsWindow } from "settings.slint";
+export { SettingsWindow }
 
 export struct TrackItem {
     id: int,
@@ -6,7 +8,6 @@ export struct TrackItem {
     artist: string,
     album: string,
     duration-secs: float,
-    bpm: float,
     art: image,
 }
 
@@ -29,6 +30,15 @@ export struct ExpandedTagItem {
 export struct ExpandedPlaylistItem {
     id: int,
     name: string,
+}
+
+export struct DirTreeItem {
+    path: string,
+    name: string,       // last path component
+    indent: int,        // 0 = root, 1 = child, … (capped at 4 in Rust)
+    has-children: bool,
+    is-expanded: bool,
+    is-root: bool,      // root items show a remove button on hover
 }
 
 // Tag pill used in the expanded track panel: shows a tag name (navigates to tag
@@ -297,15 +307,17 @@ export component AppWindow inherits Window {
     in property <image>  now-playing-art;
     in property <string> now-playing-title;
     in property <string> now-playing-artist;
-    in property <float>  now-playing-bpm: 0.0;
     // Number of tracks currently being analyzed in the background.
     in-out property <int> pending-analysis-count: 0;
 
     // Sidebar data
-    in property <[string]> sidebar-dir-names;
-    in property <[string]> sidebar-dir-paths;
+    in property <[DirTreeItem]> dir-tree-items;
     in property <[SidebarEntry]> sidebar-playlists;
     in property <[SidebarEntry]> sidebar-tags;
+
+    // Directory management
+    in-out property <bool>   show-dir-duplicate-dialog: false;
+    in-out property <string> dir-duplicate-message: "";
 
     // Navigation state
     in-out property <int> nav-kind: 0;       // 0=all, 1=dir, 2=playlist, 3=tag
@@ -341,6 +353,11 @@ export component AppWindow inherits Window {
     callback nav-playlist(int);
     callback nav-tag(int);
 
+    // Directory management callbacks
+    callback add-directory-clicked();
+    callback toggle-dir-expanded(string);
+    callback remove-scanned-dir(string);
+
     // Sidebar management
     callback create-playlist(string);
     callback create-tag(string);
@@ -363,13 +380,18 @@ export component AppWindow inherits Window {
     callback add-to-playlist(int, int);      // playlist_id, track_id
     callback remove-from-playlist(int, int); // playlist_id, track_id
 
+    // Settings window — opened from Rust via on_settings_clicked
+    callback settings-clicked();
+
     HorizontalLayout {
         // ── Sidebar ──────────────────────────────────────────────────────────
         Rectangle {
             width: 200px;
             background: #11111b;
 
+            VerticalLayout {
             sidebar-scroll := ScrollView {
+             vertical-stretch: 1;
              viewport-width: 200px;
 
             VerticalLayout {
@@ -411,41 +433,96 @@ export component AppWindow inherits Window {
                     height: 28px;
                     HorizontalLayout {
                         padding-left: 12px;
+                        padding-right: 8px;
                         padding-top: 10px;
                         Text {
                             text: "DIRECTORIES";
                             color: #45475a;
                             font-size: 10px;
+                            horizontal-stretch: 1;
                             vertical-alignment: center;
+                        }
+                        Rectangle {
+                            width: 18px;
+                            height: 18px;
+                            y: 5px;
+                            border-radius: 3px;
+                            background: add-dir-ta.has-hover ? #313244 : transparent;
+                            Text {
+                                text: "+";
+                                color: #6c7086;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                font-size: 14px;
+                            }
+                            add-dir-ta := TouchArea {
+                                clicked => { root.add-directory-clicked(); }
+                            }
                         }
                     }
                 }
 
-                for dir-name[i] in root.sidebar-dir-names: Rectangle {
+                // Directory tree — flat list with per-item indent + chevron
+                for item in root.dir-tree-items: Rectangle {
                     height: 32px;
-                    background: root.nav-kind == 1 && root.nav-dir == root.sidebar-dir-paths[i]
-                        ? #313244
-                        : (dir-ta.has-hover ? #1e1e2e : transparent);
+                    property <bool> selected: root.nav-kind == 1 && root.nav-dir == item.path;
+                    background: selected ? #313244 : (row-ta.has-hover ? #1e1e2e : transparent);
 
                     HorizontalLayout {
-                        padding-left: 20px;
+                        spacing: 0;
+                        // Indent spacer
+                        Rectangle { width: item.indent * 12px + 4px; }
+                        // Chevron (16px, always present to keep alignment)
+                        Rectangle {
+                            width: 16px;
+                            Text {
+                                text: item.has-children ? (item.is-expanded ? "▼" : "▶") : "";
+                                color: #6c7086;
+                                font-size: 9px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                        // Directory name
                         Text {
-                            text: dir-name;
-                            color: root.nav-kind == 1 && root.nav-dir == root.sidebar-dir-paths[i]
-                                ? #cdd6f4 : #a6adc8;
+                            text: item.name;
+                            color: selected ? #cdd6f4 : #a6adc8;
                             font-size: 12px;
                             vertical-alignment: center;
                             overflow: elide;
                             wrap: no-wrap;
+                            horizontal-stretch: 1;
                         }
+                        // Remove button — root items only, visible on hover
+                        if item.is-root: Rectangle {
+                            width: 22px;
+                            visible: row-ta.has-hover;
+                            background: remove-dir-ta.has-hover ? #f38ba820 : transparent;
+                            border-radius: 9px;
+                            Text {
+                                text: "×";
+                                color: #f38ba8;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            remove-dir-ta := TouchArea {
+                                clicked => { root.remove-scanned-dir(item.path); }
+                            }
+                        }
+                        Rectangle { width: 4px; }
                     }
 
-                    dir-ta := TouchArea {
+                    // Row touch area — navigate + expand/collapse
+                    row-ta := TouchArea {
                         clicked => {
                             root.nav-kind = 1;
                             root.nav-id = -1;
-                            root.nav-dir = root.sidebar-dir-paths[i];
-                            root.nav-select-dir(root.sidebar-dir-paths[i]);
+                            root.nav-dir = item.path;
+                            root.nav-select-dir(item.path);
+                            if (item.has-children) {
+                                root.toggle-dir-expanded(item.path);
+                            }
                         }
                     }
                 }
@@ -486,14 +563,14 @@ export component AppWindow inherits Window {
 
                 // Sidebar layout geometry (px from VerticalLayout top):
                 //   8 padding-top + 32 All-Tracks + 28 DIRS header
-                //   + N*32 dir rows + 28 PLAYLISTS header = 96 + N*32
+                //   + N*32 dir tree rows + 28 PLAYLISTS header = 96 + N*32
                 // Each playlist row adds another 32px.
                 // sidebar-scroll.viewport-y accounts for scroll offset (0 = top, negative = scrolled down).
                 for pl[pl-i] in root.sidebar-playlists: Rectangle {
                     height: 32px;
 
                     property <length> item-top:
-                        96px + root.sidebar-dir-names.length * 32px + pl-i * 32px
+                        96px + root.dir-tree-items.length * 32px + pl-i * 32px
                         + sidebar-scroll.viewport-y;
 
                     property <bool> is-drop-target:
@@ -652,6 +729,26 @@ export component AppWindow inherits Window {
                 }
             }
             } // ScrollView
+
+            // ── Gear icon footer ──────────────────────────────────────────
+            Rectangle {
+                height: 36px;
+                background: #0d0d17;
+                HorizontalLayout {
+                    padding-left: 12px;
+                    alignment: start;
+                    Text {
+                        text: "⚙";
+                        color: gear-ta.has-hover ? #cdd6f4 : #6c7086;
+                        font-size: 14px;
+                        vertical-alignment: center;
+                    }
+                }
+                gear-ta := TouchArea {
+                    clicked => { root.settings-clicked(); }
+                }
+            }
+            } // VerticalLayout
         }
 
         // Sidebar divider
@@ -781,14 +878,6 @@ export component AppWindow inherits Window {
                                     vertical-alignment: center;
                                     width: 160px;
                                     overflow: elide;
-                                }
-                                Text {
-                                    text: track.bpm > 0 ? Math.round(track.bpm) + " BPM" : "";
-                                    color: #585b70;
-                                    vertical-alignment: center;
-                                    width: 60px;
-                                    horizontal-alignment: right;
-                                    font-size: 10px;
                                 }
                             }
 
@@ -1069,12 +1158,6 @@ export component AppWindow inherits Window {
                             wrap: no-wrap;
                         }
 
-                        if root.now-playing-bpm > 0: Text {
-                            text: Math.round(root.now-playing-bpm) + " BPM";
-                            font-size: 10px;
-                            color: #585b70;
-                        }
-
                         HorizontalLayout {
                             spacing: 4px;
                             alignment: start;
@@ -1131,6 +1214,56 @@ export component AppWindow inherits Window {
         text: "Analyzing " + root.pending-analysis-count + " tracks…";
         color: #585b70;
         font-size: 11px;
+    }
+
+    // Duplicate-directory warning dialog
+    if root.show-dir-duplicate-dialog: Rectangle {
+        background: #00000099;
+        Rectangle {
+            width: 280px;
+            height: 110px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: #1e1e2e;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: #313244;
+            drop-shadow-color: #00000066;
+            drop-shadow-blur: 12px;
+            drop-shadow-offset-y: 4px;
+
+            VerticalLayout {
+                padding: 20px;
+                spacing: 14px;
+                Text {
+                    text: root.dir-duplicate-message;
+                    color: #cdd6f4;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                }
+                Rectangle {
+                    height: 28px;
+                    border-radius: 4px;
+                    background: ok-ta.has-hover ? #45475a : #313244;
+                    Text {
+                        text: "OK";
+                        color: #cdd6f4;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    ok-ta := TouchArea {
+                        clicked => {
+                            root.show-dir-duplicate-dialog = false;
+                            root.dir-duplicate-message = "";
+                        }
+                    }
+                }
+            }
+        }
+        // Block all input behind the dialog
+        TouchArea { }
     }
 
     // Drag ghost — floats above everything while dragging

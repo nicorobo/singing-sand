@@ -1,9 +1,6 @@
 use anyhow::{Context, Result};
-use spectrum_analyzer::{
-    FrequencyLimit, samples_fft_to_spectrum,
-    scaling::divide_by_N_sqrt,
-    windows::hann_window,
-};
+use realfft::RealFftPlanner;
+use realfft::num_complex::Complex;
 use std::path::Path;
 use symphonia::core::{
     audio::SampleBuffer,
@@ -14,30 +11,12 @@ use symphonia::core::{
     probe::Hint,
 };
 
-/// Per-bucket frequency-band RMS values, normalised to [0, 1].
-#[derive(Debug, Clone, Copy, Default)]
-pub struct WaveformBucket {
-    /// Low band (20–250 Hz) RMS.
-    pub low: f32,
-    /// Mid band (250–4 000 Hz) RMS.
-    pub mid: f32,
-    /// High band (4 000–20 000 Hz) RMS.
-    pub high: f32,
-}
-
-impl WaveformBucket {
-    /// Flatten to [low, mid, high] for DB serialisation.
-    pub fn to_array(self) -> [f32; 3] {
-        [self.low, self.mid, self.high]
-    }
-}
+pub use ss_waveform::WaveformBucket;
 
 /// Result of a full analysis pass over one audio file.
 pub struct AnalysisResult {
     /// `num_buckets` frequency-band waveform buckets.
     pub waveform: Vec<WaveformBucket>,
-    /// Detected tempo in beats per minute.
-    pub bpm: f32,
 }
 
 /// Decode an audio file in a single pass and return both a frequency-band
@@ -86,12 +65,15 @@ pub fn analyze_track(path: &Path, num_buckets: usize) -> Result<AnalysisResult> 
     // Each entry is (sum_sq_low, sum_sq_mid, sum_sq_high, count).
     let mut buckets: Vec<(f64, f64, f64, u64)> = vec![(0.0, 0.0, 0.0, 0); num_buckets];
 
-    // All mono samples collected for BPM detection.
-    let mut all_mono: Vec<f32> = Vec::with_capacity(total_frames.max(1));
-
     // Rolling window for FFT — size must be a power of 2 ≤ 16384.
     const FFT_SIZE: usize = 2048;
     let mut fft_window: Vec<f32> = Vec::with_capacity(FFT_SIZE);
+
+    // Reusable FFT plan + output/scratch buffers (allocated once, reused per window).
+    let mut planner = RealFftPlanner::<f32>::new();
+    let fft = planner.plan_fft_forward(FFT_SIZE);
+    let mut fft_output = fft.make_output_vec();
+    let mut fft_scratch = fft.make_scratch_vec();
 
     // Running frame counter (used to assign samples to buckets).
     let mut frame_cursor: usize = 0;
@@ -119,8 +101,6 @@ pub fn analyze_track(path: &Path, num_buckets: usize) -> Result<AnalysisResult> 
                 .sum::<f32>()
                 / channels as f32;
 
-            all_mono.push(mono);
-
             // Feed into FFT window.
             fft_window.push(mono);
             if fft_window.len() == FFT_SIZE {
@@ -134,11 +114,14 @@ pub fn analyze_track(path: &Path, num_buckets: usize) -> Result<AnalysisResult> 
                 accumulate_fft_bands(
                     &fft_window,
                     sample_rate,
+                    &fft,
+                    &mut fft_output,
+                    &mut fft_scratch,
                     &mut buckets[bucket_center],
                 );
 
-                // Hop by FFT_SIZE / 2 (50% overlap).
-                fft_window.drain(..FFT_SIZE / 2);
+                // No overlap — clear the window entirely (2× fewer FFTs vs 50% hop).
+                fft_window.clear();
             }
 
             let bucket_idx = if frames_per_bucket > 0 {
@@ -156,7 +139,14 @@ pub fn analyze_track(path: &Path, num_buckets: usize) -> Result<AnalysisResult> 
     if fft_window.len() >= 4 {
         fft_window.resize(FFT_SIZE, 0.0);
         let last_bucket = num_buckets - 1;
-        accumulate_fft_bands(&fft_window, sample_rate, &mut buckets[last_bucket]);
+        accumulate_fft_bands(
+            &fft_window,
+            sample_rate,
+            &fft,
+            &mut fft_output,
+            &mut fft_scratch,
+            &mut buckets[last_bucket],
+        );
     }
 
     // Compute per-band RMS from accumulated sums.
@@ -190,9 +180,7 @@ pub fn analyze_track(path: &Path, num_buckets: usize) -> Result<AnalysisResult> 
         })
         .collect();
 
-    let bpm = detect_bpm(&all_mono, sample_rate);
-
-    Ok(AnalysisResult { waveform, bpm })
+    Ok(AnalysisResult { waveform })
 }
 
 // ── FFT band accumulation ──────────────────────────────────────────────────────
@@ -200,20 +188,35 @@ pub fn analyze_track(path: &Path, num_buckets: usize) -> Result<AnalysisResult> 
 /// Run an FFT on `window` (must be exactly FFT_SIZE samples) and add the
 /// squared magnitudes of each frequency band into `acc`.
 /// `acc` = (sum_sq_low, sum_sq_mid, sum_sq_high, count).
+///
+/// Uses a real-valued FFT (N/2+1 complex outputs) for ~2× faster computation
+/// vs a full complex FFT.
 fn accumulate_fft_bands(
     window: &[f32],
     sample_rate: u32,
+    fft: &std::sync::Arc<dyn realfft::RealToComplex<f32>>,
+    output: &mut Vec<Complex<f32>>,
+    scratch: &mut Vec<Complex<f32>>,
     acc: &mut (f64, f64, f64, u64),
 ) {
-    let windowed = hann_window(window);
-    let Ok(spectrum) = samples_fft_to_spectrum(
-        &windowed,
-        sample_rate,
-        FrequencyLimit::All,
-        Some(&divide_by_N_sqrt),
-    ) else {
+    let n = window.len();
+    // Apply Hann window into a mutable copy (realfft modifies input in-place).
+    let mut input: Vec<f32> = window
+        .iter()
+        .enumerate()
+        .map(|(i, &s)| {
+            let w = 0.5
+                * (1.0
+                    - (2.0 * std::f32::consts::PI * i as f32 / (n - 1) as f32).cos());
+            s * w
+        })
+        .collect();
+
+    if fft.process_with_scratch(&mut input, output, scratch).is_err() {
         return;
-    };
+    }
+
+    let freq_resolution = sample_rate as f32 / n as f32;
 
     let mut sum_low = 0.0f64;
     let mut cnt_low = 0u32;
@@ -222,18 +225,17 @@ fn accumulate_fft_bands(
     let mut sum_high = 0.0f64;
     let mut cnt_high = 0u32;
 
-    for (freq, val) in spectrum.data() {
-        let f = freq.val();
-        let v = val.val() as f64;
-        let sq = v * v;
+    for (i, c) in output.iter().enumerate() {
+        let f = i as f32 * freq_resolution;
+        let power = c.norm_sqr() as f64;
         if f < 250.0 {
-            sum_low += sq;
+            sum_low += power;
             cnt_low += 1;
         } else if f < 4000.0 {
-            sum_mid += sq;
+            sum_mid += power;
             cnt_mid += 1;
         } else if f <= 20000.0 {
-            sum_high += sq;
+            sum_high += power;
             cnt_high += 1;
         }
     }
@@ -244,81 +246,3 @@ fn accumulate_fft_bands(
     if cnt_high > 0 { acc.2 += sum_high / cnt_high as f64; }
 }
 
-// ── BPM detection ─────────────────────────────────────────────────────────────
-
-/// Estimate the BPM of a mono audio signal via energy-envelope autocorrelation.
-///
-/// Algorithm:
-/// 1. Compute RMS energy in overlapping 512-sample windows.
-/// 2. Extract an onset-strength signal (positive energy differences).
-/// 3. Autocorrelate the onset signal over lags corresponding to 60–200 BPM.
-/// 4. Return the BPM at the highest-autocorrelation lag.
-fn detect_bpm(samples: &[f32], sample_rate: u32) -> f32 {
-    if samples.len() < 8192 {
-        return 0.0; // Too short to estimate reliably.
-    }
-
-    const WINDOW: usize = 512;
-    const HOP: usize = 256;
-
-    // Step 1: energy envelope.
-    let energy: Vec<f32> = samples
-        .windows(WINDOW)
-        .step_by(HOP)
-        .map(|w| {
-            let sq_sum: f32 = w.iter().map(|s| s * s).sum();
-            (sq_sum / WINDOW as f32).sqrt()
-        })
-        .collect();
-
-    if energy.len() < 4 {
-        return 0.0;
-    }
-
-    // Step 2: onset strength (half-wave rectified first difference).
-    let onset: Vec<f32> = energy
-        .windows(2)
-        .map(|w| (w[1] - w[0]).max(0.0))
-        .collect();
-
-    // Step 3: autocorrelation over BPM-relevant lags.
-    let frame_rate = sample_rate as f32 / HOP as f32;
-    let min_bpm = 60.0_f32;
-    let max_bpm = 200.0_f32;
-    let min_lag = (frame_rate * 60.0 / max_bpm).round() as usize;
-    let max_lag = ((frame_rate * 60.0 / min_bpm).round() as usize).min(onset.len() / 2);
-
-    if min_lag >= max_lag {
-        return 0.0;
-    }
-
-    let n = onset.len();
-    let mut best_lag = min_lag;
-    let mut best_val = -1.0_f32;
-
-    for lag in min_lag..=max_lag {
-        let ac: f32 = onset[..n - lag]
-            .iter()
-            .zip(&onset[lag..])
-            .map(|(a, b)| a * b)
-            .sum::<f32>()
-            / (n - lag) as f32;
-        if ac > best_val {
-            best_val = ac;
-            best_lag = lag;
-        }
-    }
-
-    // Convert lag to BPM.
-    let raw_bpm = frame_rate * 60.0 / best_lag as f32;
-
-    // Fold into [60, 200] range by halving/doubling.
-    fold_bpm(raw_bpm)
-}
-
-/// Fold a raw BPM estimate into the [60, 200] range by doubling or halving.
-fn fold_bpm(mut bpm: f32) -> f32 {
-    while bpm > 200.0 { bpm /= 2.0; }
-    while bpm < 60.0  { bpm *= 2.0; }
-    bpm
-}

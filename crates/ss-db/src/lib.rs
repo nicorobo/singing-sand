@@ -49,7 +49,8 @@ impl Db {
     pub async fn open(path: &Path) -> Result<Self> {
         let opts = SqliteConnectOptions::new()
             .filename(path)
-            .create_if_missing(true);
+            .create_if_missing(true)
+            .foreign_keys(true);
         let pool = SqlitePool::connect_with(opts)
             .await
             .with_context(|| format!("failed to open database at {}", path.display()))?;
@@ -295,13 +296,13 @@ impl Db {
         Ok(())
     }
 
-    /// Return all (track_id, path) pairs that are missing a waveform or BPM.
+    /// Return all (track_id, path) pairs that are missing a waveform.
     /// These are queued for background analysis on startup and after each scan.
     pub async fn list_tracks_needing_analysis(&self) -> Result<Vec<(i64, std::path::PathBuf)>> {
         let rows = sqlx::query(
             r#"SELECT t.id, t.path FROM tracks t
                LEFT JOIN waveforms w ON w.track_id = t.id
-               WHERE w.track_id IS NULL OR t.bpm IS NULL
+               WHERE w.track_id IS NULL
                ORDER BY t.id"#,
         )
         .fetch_all(&self.pool)
@@ -370,6 +371,26 @@ impl Db {
             .await
             .context("list_scanned_dirs failed")?;
         Ok(rows.iter().map(|r| PathBuf::from(r.get::<String, _>("path"))).collect())
+    }
+
+    /// Delete a single track by its exact file path. Cascades to waveforms, album_art, etc.
+    pub async fn delete_track_by_path(&self, path: &str) -> Result<()> {
+        sqlx::query("DELETE FROM tracks WHERE path = ?")
+            .bind(path)
+            .execute(&self.pool)
+            .await
+            .context("delete_track_by_path failed")?;
+        Ok(())
+    }
+
+    /// Remove a scanned-directory record. Does not remove any tracks.
+    pub async fn remove_scanned_dir(&self, path: &str) -> Result<()> {
+        sqlx::query("DELETE FROM scanned_dirs WHERE path = ?")
+            .bind(path)
+            .execute(&self.pool)
+            .await
+            .context("remove_scanned_dir failed")?;
+        Ok(())
     }
 
     /// Return all tracks whose path starts with the given directory prefix.
@@ -586,6 +607,32 @@ impl Db {
         .await
         .context("list_playlists_for_track failed")?;
         Ok(rows.iter().map(|r| Playlist { id: r.get("id"), name: r.get("name") }).collect())
+    }
+
+    // ── Settings ──────────────────────────────────────────────────────────────
+
+    /// Fetch a setting value by key. Returns `None` if the key does not exist.
+    pub async fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let row = sqlx::query("SELECT value FROM settings WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await
+            .context("get_setting failed")?;
+        Ok(row.map(|r| r.get("value")))
+    }
+
+    /// Insert or update a setting key-value pair.
+    pub async fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO settings (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await
+        .context("set_setting failed")?;
+        Ok(())
     }
 
     /// Return tracks that have a given tag assigned.

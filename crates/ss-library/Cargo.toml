@@ -11,3 +11,4 @@ tracing = { workspace = true }
 tokio   = { workspace = true }
 walkdir = { workspace = true }
 lofty   = { workspace = true }
+notify  = "6"
