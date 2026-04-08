@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use slint::Model as _;
 use tracing::info;
 
-use ss_audio::{analyze_waveform, AudioEngine};
+use ss_audio::{analyze_track, AudioEngine};
 use ss_core::{AudioCommand, AudioEvent, Track};
 use ss_db::Db;
 use ss_library::Scanner;
@@ -31,26 +31,44 @@ async fn open_db() -> Result<Arc<Db>> {
     Ok(Arc::new(db))
 }
 
-/// Render RMS bucket data into a `SharedPixelBuffer` (done off the Slint thread).
-fn render_waveform_buffer(rms: &[f32]) -> slint::SharedPixelBuffer<slint::Rgb8Pixel> {
+/// Render frequency-band waveform data into a `SharedPixelBuffer`.
+///
+/// Each bucket is `[low_rms, mid_rms, high_rms]`. The bar height is the mean
+/// amplitude and its color is an additive blend of three band colors:
+///   Low  → Catppuccin Peach    rgb(250, 179, 135)
+///   Mid  → Catppuccin Blue     rgb(137, 180, 250)  (legacy colour)
+///   High → Catppuccin Lavender rgb(203, 166, 247)
+fn render_waveform_buffer(bands: &[[f32; 3]]) -> slint::SharedPixelBuffer<slint::Rgb8Pixel> {
     const W: u32 = 1000;
     const H: u32 = 96;
+    let bg = slint::Rgb8Pixel { r: 24, g: 24, b: 37 };
+
     let mut buf = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(W, H);
     let pixels = buf.make_mut_slice();
-
     for p in pixels.iter_mut() {
-        *p = slint::Rgb8Pixel { r: 24, g: 24, b: 37 };
+        *p = bg;
     }
 
     for x in 0..W as usize {
-        let bucket = (x * rms.len()) / W as usize;
-        let val = rms.get(bucket).copied().unwrap_or(0.0).clamp(0.0, 1.0);
-        let bar_half = ((val * H as f32) / 2.0) as usize;
+        let bucket = (x * bands.len()) / W as usize;
+        let [low, mid, high] = bands.get(bucket).copied().unwrap_or([0.0; 3]);
+
+        // Bar height driven by mean amplitude.
+        let amplitude = ((low + mid + high) / 3.0).clamp(0.0, 1.0);
+        let bar_half = ((amplitude * H as f32) / 2.0) as usize;
         let center = H as usize / 2;
         let top = center.saturating_sub(bar_half);
         let bottom = (center + bar_half).min(H as usize);
+
+        // Additive-blend color: weighted average of band colours.
+        let total = low + mid + high + 1e-6;
+        let r = ((low * 250.0 + mid * 137.0 + high * 203.0) / total) as u8;
+        let g = ((low * 179.0 + mid * 180.0 + high * 166.0) / total) as u8;
+        let b = ((low * 135.0 + mid * 250.0 + high * 247.0) / total) as u8;
+        let bar_color = slint::Rgb8Pixel { r, g, b };
+
         for y in top..bottom {
-            pixels[y * W as usize + x] = slint::Rgb8Pixel { r: 137, g: 180, b: 250 };
+            pixels[y * W as usize + x] = bar_color;
         }
     }
 
@@ -77,6 +95,7 @@ fn track_to_item(t: &Track) -> TrackItem {
         artist: t.artist.clone().unwrap_or_default().into(),
         album: t.album.clone().unwrap_or_default().into(),
         duration_secs: t.duration_secs.unwrap_or(0.0) as f32,
+        bpm: t.bpm.unwrap_or(0.0),
         art: slint::Image::default(),
     }
 }
@@ -151,6 +170,7 @@ async fn start_playback(
     let duration = track.duration_secs.unwrap_or(0.0) as f32;
     let now_title: slint::SharedString = track.title.clone().unwrap_or_default().into();
     let now_artist: slint::SharedString = track.artist.clone().unwrap_or_default().into();
+    let now_bpm = track.bpm.unwrap_or(0.0);
 
     // Load tag chips.
     let all_tags = db.list_tags().await.unwrap_or_default();
@@ -192,27 +212,45 @@ async fn start_playback(
             w.set_now_playing_art(now_art);
             w.set_now_playing_title(now_title_clone);
             w.set_now_playing_artist(now_artist_clone);
+            w.set_now_playing_bpm(now_bpm);
         }
     });
 
-    // Load or compute waveform.
+    // Load or compute frequency-band waveform.
     let path = track.path.clone();
-    let rms = match db.get_waveform(track_id).await {
+    let bands: Vec<[f32; 3]> = match db.get_waveform_bands(track_id).await {
         Ok(Some(cached)) => cached,
         _ => {
-            let rms = tokio::task::spawn_blocking(move || analyze_waveform(&path, 1000))
-                .await
-                .ok()
-                .and_then(|r| r.ok())
-                .unwrap_or_default();
-            if let Err(e) = db.save_waveform(track_id, &rms).await {
-                tracing::warn!("failed to cache waveform: {e}");
+            let path2 = path.clone();
+            match tokio::task::spawn_blocking(move || analyze_track(&path2, 1000)).await {
+                Ok(Ok(result)) => {
+                    let arrays: Vec<[f32; 3]> =
+                        result.waveform.iter().map(|b| b.to_array()).collect();
+                    if let Err(e) = db.save_waveform_bands(track_id, &arrays).await {
+                        tracing::warn!("failed to cache waveform bands: {e}");
+                    }
+                    // Save BPM if not already set.
+                    if track.bpm.is_none() && result.bpm > 0.0 {
+                        if let Err(e) = db.save_bpm(track_id, result.bpm).await {
+                            tracing::warn!("failed to save bpm: {e}");
+                        }
+                        // Update BPM in now-playing panel.
+                        let bpm = result.bpm;
+                        let weak3 = weak.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(w) = weak3.upgrade() {
+                                w.set_now_playing_bpm(bpm);
+                            }
+                        });
+                    }
+                    arrays
+                }
+                _ => vec![],
             }
-            rms
         }
     };
 
-    let pixel_buf = render_waveform_buffer(&rms);
+    let pixel_buf = render_waveform_buffer(&bands);
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(w) = weak.upgrade() {
             w.set_waveform_image(slint::Image::from_rgb8(pixel_buf));
@@ -259,43 +297,48 @@ async fn cmd_scan(dir: PathBuf) -> Result<()> {
         stats.upserted, stats.errors, stats.skipped
     );
 
-    // Generate waveforms for any newly scanned tracks that don't have one yet.
-    let mut waveforms_generated = 0usize;
-    let mut waveform_errors = 0usize;
+    // Analyse new tracks: generate frequency-band waveforms and detect BPM.
+    let mut analysed = 0usize;
+    let mut analysis_errors = 0usize;
     for (track_id, path) in stats.upserted_tracks {
-        match db.get_waveform(track_id).await {
-            Ok(Some(_)) => continue, // already cached
-            Ok(None) => {}
-            Err(e) => {
-                tracing::warn!(track_id, error = %e, "failed to check waveform");
-                continue;
-            }
+        // Skip if both waveform and BPM are already cached.
+        let has_waveform = matches!(db.get_waveform_bands(track_id).await, Ok(Some(_)));
+        let has_bpm = matches!(
+            db.get_track(track_id).await,
+            Ok(Some(ref t)) if t.bpm.is_some()
+        );
+        if has_waveform && has_bpm {
+            continue;
         }
-        let rms = match tokio::task::spawn_blocking(move || analyze_waveform(&path, 1000)).await {
-            Ok(Ok(r)) => r,
+
+        match tokio::task::spawn_blocking(move || analyze_track(&path, 1000)).await {
+            Ok(Ok(result)) => {
+                let arrays: Vec<[f32; 3]> =
+                    result.waveform.iter().map(|b| b.to_array()).collect();
+                if let Err(e) = db.save_waveform_bands(track_id, &arrays).await {
+                    tracing::warn!(track_id, error = %e, "failed to save waveform bands");
+                    analysis_errors += 1;
+                    continue;
+                }
+                if result.bpm > 0.0 {
+                    if let Err(e) = db.save_bpm(track_id, result.bpm).await {
+                        tracing::warn!(track_id, error = %e, "failed to save bpm");
+                    }
+                }
+                analysed += 1;
+            }
             Ok(Err(e)) => {
-                tracing::warn!(track_id, error = %e, "waveform analysis failed");
-                waveform_errors += 1;
-                continue;
+                tracing::warn!(track_id, error = %e, "analysis failed");
+                analysis_errors += 1;
             }
             Err(e) => {
-                tracing::warn!(track_id, error = %e, "waveform task panicked");
-                waveform_errors += 1;
-                continue;
+                tracing::warn!(track_id, error = %e, "analysis task panicked");
+                analysis_errors += 1;
             }
-        };
-        if let Err(e) = db.save_waveform(track_id, &rms).await {
-            tracing::warn!(track_id, error = %e, "failed to save waveform");
-            waveform_errors += 1;
-        } else {
-            waveforms_generated += 1;
         }
     }
-    if waveforms_generated > 0 || waveform_errors > 0 {
-        println!(
-            "waveforms — {} generated, {} errors",
-            waveforms_generated, waveform_errors
-        );
+    if analysed > 0 || analysis_errors > 0 {
+        println!("analysis — {} done, {} errors", analysed, analysis_errors);
     }
 
     Ok(())
@@ -331,6 +374,95 @@ fn cmd_play_cli(path: PathBuf) -> Result<()> {
     }
     println!();
     Ok(())
+}
+
+/// Long-lived background analysis queue.
+///
+/// Send `(track_id, path)` pairs via [`AnalysisQueue::enqueue`]. A single
+/// tokio task drains the queue sequentially, running FFT + BPM analysis for
+/// each track and saving results to the DB. The Slint `pending-analysis-count`
+/// property is updated in real-time via `invoke_from_event_loop`.
+struct AnalysisQueue {
+    tx: tokio::sync::mpsc::UnboundedSender<(i64, std::path::PathBuf)>,
+}
+
+impl AnalysisQueue {
+    fn spawn(
+        db: Arc<Db>,
+        weak: slint::Weak<AppWindow>,
+        rt: &tokio::runtime::Handle,
+    ) -> Self {
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<(i64, std::path::PathBuf)>();
+        let pending = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        rt.spawn(async move {
+            while let Some((track_id, path)) = rx.recv().await {
+                let count = pending.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                update_analysis_counter(&weak, count);
+
+                let result =
+                    tokio::task::spawn_blocking(move || analyze_track(&path, 1000)).await;
+
+                match result {
+                    Ok(Ok(analysis)) => {
+                        let arrays: Vec<[f32; 3]> =
+                            analysis.waveform.iter().map(|b| b.to_array()).collect();
+                        if let Err(e) = db.save_waveform_bands(track_id, &arrays).await {
+                            tracing::warn!(track_id, error = %e, "analysis: save waveform failed");
+                        }
+                        if analysis.bpm > 0.0 {
+                            if let Err(e) = db.save_bpm(track_id, analysis.bpm).await {
+                                tracing::warn!(track_id, error = %e, "analysis: save bpm failed");
+                            }
+                            // Update BPM in track list row if it's currently visible.
+                            let bpm = analysis.bpm;
+                            let weak2 = weak.clone();
+                            let _ = slint::invoke_from_event_loop(move || {
+                                let Some(w) = weak2.upgrade() else { return };
+                                let model = w.get_tracks();
+                                if let Some(idx) = (0..model.row_count())
+                                    .find(|&i| model.row_data(i).map(|r| r.id) == Some(track_id as i32))
+                                {
+                                    if let Some(mut row) = model.row_data(idx) {
+                                        row.bpm = bpm;
+                                        model.set_row_data(idx, row);
+                                    }
+                                }
+                            });
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!(track_id, error = %e, "analysis failed");
+                    }
+                    Err(e) => {
+                        tracing::warn!(track_id, error = %e, "analysis task panicked");
+                    }
+                }
+
+                let remaining = pending.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) - 1;
+                update_analysis_counter(&weak, remaining);
+            }
+        });
+
+        Self { tx }
+    }
+
+    fn enqueue(&self, tracks: impl IntoIterator<Item = (i64, std::path::PathBuf)>) {
+        for item in tracks {
+            let _ = self.tx.send(item);
+        }
+    }
+}
+
+/// Push the current analysis count to the Slint UI.
+fn update_analysis_counter(weak: &slint::Weak<AppWindow>, count: usize) {
+    let weak = weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(w) = weak.upgrade() {
+            w.set_pending_analysis_count(count as i32);
+        }
+    });
 }
 
 /// Launch the Slint GUI.
@@ -390,6 +522,21 @@ fn cmd_gui() -> Result<()> {
         tags.len()
     );
 
+    // ── Background analysis queue ────────────────────────────────────────────
+
+    let analysis_queue = Arc::new(AnalysisQueue::spawn(
+        Arc::clone(&db),
+        window.as_weak(),
+        &rt_handle,
+    ));
+
+    // Enqueue all tracks that are missing a waveform or BPM.
+    {
+        let needs_analysis = rt.block_on(db.list_tracks_needing_analysis()).unwrap_or_default();
+        info!("{} tracks queued for background analysis", needs_analysis.len());
+        analysis_queue.enqueue(needs_analysis);
+    }
+
     // ── Nav callbacks ────────────────────────────────────────────────────────
 
     {
@@ -409,7 +556,6 @@ fn cmd_gui() -> Result<()> {
                     if let Some(w) = weak2.upgrade() {
                         w.set_tracks(tracks_to_model_rc(&tracks_for_ui));
                         w.set_expanded_track_id(-1);
-                        w.set_expanded_playlists_open(false);
                     }
                 });
                 spawn_art_loader(tracks, weak, Arc::clone(&db), rth2);
@@ -435,7 +581,6 @@ fn cmd_gui() -> Result<()> {
                     if let Some(w) = weak2.upgrade() {
                         w.set_tracks(tracks_to_model_rc(&tracks_for_ui));
                         w.set_expanded_track_id(-1);
-                        w.set_expanded_playlists_open(false);
                     }
                 });
                 spawn_art_loader(tracks, weak, Arc::clone(&db), rth2);
@@ -461,7 +606,6 @@ fn cmd_gui() -> Result<()> {
                     if let Some(w) = weak2.upgrade() {
                         w.set_tracks(tracks_to_model_rc(&tracks_for_ui));
                         w.set_expanded_track_id(-1);
-                        w.set_expanded_playlists_open(false);
                     }
                 });
                 spawn_art_loader(tracks, weak, Arc::clone(&db), rth2);
@@ -486,7 +630,6 @@ fn cmd_gui() -> Result<()> {
                     if let Some(w) = weak2.upgrade() {
                         w.set_tracks(tracks_to_model_rc(&tracks_for_ui));
                         w.set_expanded_track_id(-1);
-                        w.set_expanded_playlists_open(false);
                     }
                 });
                 spawn_art_loader(tracks, weak, Arc::clone(&db), rth2);

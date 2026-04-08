@@ -10,4 +10,5 @@ pub struct Track {
     pub artist: Option<String>,
     pub album: Option<String>,
     pub duration_secs: Option<f64>,
+    pub bpm: Option<f32>,
 }

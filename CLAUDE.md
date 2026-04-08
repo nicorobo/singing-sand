@@ -92,6 +92,10 @@ Key files: `crates/ss-db/migrations/0003_playlists_tags.sql`, `crates/ss-db/src/
 Album art extracted from embedded tags during scan (lofty `pictures()`), stored as raw JPEG/PNG bytes in SQLite (`album_art` table, migration 0004). 44px thumbnails loaded progressively per row via `invoke_from_event_loop` + `Model::set_row_data`. Now-playing panel below waveform shows 60px art, title, artist, and Prev/Play-Pause/Next buttons. Waveform halved to 48px (top half only via clip). `image` crate used for decode + resize. `slint::Image` is not Send — pixel buffers (`SharedPixelBuffer<Rgb8Pixel>`) are used across thread boundaries and converted to `Image` on the Slint thread.
 Key files: `crates/ss-db/migrations/0004_album_art.sql`, `crates/ss-db/src/lib.rs`, `crates/ss-library/src/lib.rs`, `crates/ss-app/src/main.rs`, `crates/ss-app/ui/main.slint`
 
+### ✅ Phase 9 — BPM detection + frequency-band waveforms
+`analyze_track` (single Symphonia decode pass) replaces `analyze_waveform`. Per-bucket FFT via `spectrum-analyzer` produces [low/mid/high] RMS bands (20–250Hz / 250–4kHz / 4k–20kHz). BPM detected via energy-envelope autocorrelation (no external BPM lib — `bpm-analyzer` is device-capture only). Waveform rendered with additive colour blend (low=Peach, mid=Blue, high=Lavender). `AnalysisQueue` (long-lived tokio task + `UnboundedSender`) processes tracks missing a waveform or BPM; designed for future UI-driven directory imports. `pending-analysis-count` Slint property drives a "Analyzing N tracks…" bottom-right overlay. BPM shown in track-list rows and now-playing panel. Migration 0006 adds `bpm REAL` to tracks and clears waveforms (format change: `[f32×3×N]` interleaved).
+Key files: `crates/ss-db/migrations/0006_bpm_waveform_v2.sql`, `crates/ss-audio/src/analyze.rs`, `crates/ss-db/src/lib.rs`, `crates/ss-app/src/main.rs`, `crates/ss-app/ui/main.slint`
+
 ## For a future version
 ### ⬜ Phase 8 — Waveform thumbnails
 Per-track thumbnail in list view; click to seek/play.

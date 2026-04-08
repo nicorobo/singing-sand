@@ -6,6 +6,7 @@ export struct TrackItem {
     artist: string,
     album: string,
     duration-secs: float,
+    bpm: float,
     art: image,
 }
 
@@ -88,13 +89,11 @@ component ExpandedTrackPanel inherits Rectangle {
     in property <string>                   duration-formatted;
     in property <[ExpandedTagItem]>        tags;
     in property <[ExpandedPlaylistItem]>   playlists;
-    in property <bool>                     playlists-open;
     in property <string>                   notes;
 
     callback remove-tag(int);
     callback navigate-tag(int);
     callback navigate-playlist(int);
-    callback toggle-playlists-open();
     callback notes-edited(string);
 
     // When the notes property is set externally (on expand), sync the TextInput.
@@ -103,7 +102,7 @@ component ExpandedTrackPanel inherits Rectangle {
     background: #16161f;
 
     VerticalLayout {
-        padding-left: 68px;   // aligns under title column: 4 outer + 20 arrow + 8 spacing + 36 from art
+        padding-left: 16px;
         padding-right: 16px;
         padding-top: 10px;
         padding-bottom: 12px;
@@ -141,6 +140,7 @@ component ExpandedTrackPanel inherits Rectangle {
                 font-size: 11px;
                 vertical-alignment: center;
                 width: 68px;
+                horizontal-stretch: 0;
             }
 
             if root.tags.length == 0: Text {
@@ -163,7 +163,7 @@ component ExpandedTrackPanel inherits Rectangle {
             }
         }
 
-        // ── Playlists ─────────────────────────────────────────────────────────
+        // ── Playlists — comma-separated clickable links ───────────────────────
         HorizontalLayout {
             spacing: 8px;
             alignment: start;
@@ -172,59 +172,43 @@ component ExpandedTrackPanel inherits Rectangle {
                 text: "Playlists";
                 color: #6c7086;
                 font-size: 11px;
-                vertical-alignment: top;
+                vertical-alignment: center;
                 width: 68px;
-                height: 20px;
+                horizontal-stretch: 0;
             }
 
-            VerticalLayout {
-                spacing: 3px;
-                horizontal-stretch: 1;
+            if root.playlists.length == 0: Text {
+                text: "None";
+                color: #45475a;
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+
+            if root.playlists.length > 0: HorizontalLayout {
+                spacing: 0;
                 alignment: start;
+                horizontal-stretch: 1;
 
-                // "N playlists ▶/▼" clickable header
-                Rectangle {
-                    height: 20px;
-                    width: pl-summary.preferred-width + (root.playlists.length > 0 ? pl-arrow.preferred-width + 4px : 0px);
+                for pl[i] in root.playlists: HorizontalLayout {
+                    alignment: start;
+                    spacing: 0;
 
-                    pl-summary := Text {
-                        x: 0;
-                        y: (parent.height - self.preferred-height) / 2;
-                        text: root.playlists.length == 0 ? "No playlists"
-                            : (root.playlists.length == 1 ? "1 playlist"
-                            : ("" + root.playlists.length + " playlists"));
-                        color: root.playlists.length > 0 ? #89b4fa : #45475a;
-                        font-size: 11px;
-                    }
-
-                    pl-arrow := Text {
-                        x: pl-summary.preferred-width + 4px;
-                        y: (parent.height - self.preferred-height) / 2;
-                        text: root.playlists-open ? "▼" : "▶";
+                    if i > 0: Text {
+                        text: ", ";
                         color: #6c7086;
-                        font-size: 9px;
-                        visible: root.playlists.length > 0;
+                        font-size: 11px;
+                        vertical-alignment: center;
                     }
 
-                    TouchArea {
-                        enabled: root.playlists.length > 0;
-                        clicked => { root.toggle-playlists-open(); }
-                    }
-                }
-
-                // Expanded playlist list
-                if root.playlists-open: VerticalLayout {
-                    spacing: 1px;
-
-                    for pl in root.playlists: Rectangle {
+                    pl-link := Rectangle {
+                        width: pl-text.preferred-width;
                         height: 20px;
 
-                        pl-name := Text {
-                            x: 4px;
-                            y: (parent.height - self.preferred-height) / 2;
+                        pl-text := Text {
                             text: pl.name;
-                            color: pl-ta.has-hover ? #cdd6f4 : #a6adc8;
+                            color: pl-ta.has-hover ? #cdd6f4 : #89b4fa;
                             font-size: 11px;
+                            vertical-alignment: center;
                         }
 
                         pl-ta := TouchArea {
@@ -235,40 +219,33 @@ component ExpandedTrackPanel inherits Rectangle {
             }
         }
 
-        // ── Notes ─────────────────────────────────────────────────────────────
-        HorizontalLayout {
-            spacing: 8px;
-            alignment: start;
+        // ── Notes label ───────────────────────────────────────────────────────
+        Text {
+            text: "Notes";
+            color: #6c7086;
+            font-size: 11px;
+            height: 14px;
+        }
 
-            Text {
-                text: "Notes";
-                color: #6c7086;
+        // ── Notes textarea ────────────────────────────────────────────────────
+        notes-box := Rectangle {
+            height: 80px;
+            border-radius: 4px;
+            background: #1e1e2e;
+            border-width: 1px;
+            border-color: notes-input.has-focus ? #89b4fa : #45475a;
+            clip: true;
+
+            notes-input := TextInput {
+                x: 8px;
+                y: 6px;
+                width: parent.width - 16px;
+                height: parent.height - 12px;
+                text: root.notes;
+                color: #cdd6f4;
                 font-size: 11px;
-                vertical-alignment: top;
-                width: 68px;
-                y: 3px;
-                height: 14px;
-            }
-
-            notes-box := Rectangle {
-                horizontal-stretch: 1;
-                height: 72px;
-                border-radius: 4px;
-                background: #1e1e2e;
-                border-width: 1px;
-                border-color: notes-input.has-focus ? #89b4fa : #313244;
-
-                notes-input := TextInput {
-                    x: 8px;
-                    y: 6px;
-                    width: parent.width - 16px;
-                    height: parent.height - 12px;
-                    text: root.notes;
-                    color: #cdd6f4;
-                    font-size: 11px;
-                    wrap: word-wrap;
-                    edited => { root.notes-edited(self.text); }
-                }
+                wrap: word-wrap;
+                edited => { root.notes-edited(self.text); }
             }
         }
     }
@@ -320,6 +297,9 @@ export component AppWindow inherits Window {
     in property <image>  now-playing-art;
     in property <string> now-playing-title;
     in property <string> now-playing-artist;
+    in property <float>  now-playing-bpm: 0.0;
+    // Number of tracks currently being analyzed in the background.
+    in-out property <int> pending-analysis-count: 0;
 
     // Sidebar data
     in property <[string]> sidebar-dir-names;
@@ -370,7 +350,6 @@ export component AppWindow inherits Window {
 
     // Expanded track row
     in-out property <int>  expanded-track-id: -1;
-    in-out property <bool> expanded-playlists-open: false;
     in property <[ExpandedTagItem]>      expanded-track-tags;
     in property <[ExpandedPlaylistItem]> expanded-track-playlists;
     in property <string>                 expanded-track-notes;
@@ -691,12 +670,12 @@ export component AppWindow inherits Window {
                 background: #181825;
 
                 HorizontalLayout {
-                    padding-left: 4px;
+                    padding-left: 12px;
                     padding-right: 12px;
                     spacing: 8px;
 
-                    // Spacer matching arrow (20px) + art (44px) columns
-                    Rectangle { width: 72px; }
+                    // Spacer matching art thumbnail column
+                    Rectangle { width: 44px; }
 
                     Text {
                         text: "Title";
@@ -744,36 +723,8 @@ export component AppWindow inherits Window {
                     HorizontalLayout {
                         y: 0;
                         height: 44px;
-                        padding-left: 4px;
+                        padding-left: 12px;
                         spacing: 8px;
-
-                        // Expand / collapse arrow
-                        Rectangle {
-                            width: 20px;
-                            height: 44px;
-                            opacity: row-hovered || is-expanded ? 1.0 : 0.0;
-
-                            Text {
-                                text: is-expanded ? "▼" : "▶";
-                                color: is-expanded ? #89b4fa : #6c7086;
-                                font-size: 9px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-
-                            arrow-ta := TouchArea {
-                                clicked => {
-                                    if is-expanded {
-                                        root.expanded-track-id = -1;
-                                        root.expanded-playlists-open = false;
-                                    } else {
-                                        root.expanded-track-id = track.id;
-                                        root.expanded-playlists-open = false;
-                                        root.expand-track(track.id);
-                                    }
-                                }
-                            }
-                        }
 
                         // Album art thumbnail
                         Rectangle {
@@ -831,6 +782,14 @@ export component AppWindow inherits Window {
                                     width: 160px;
                                     overflow: elide;
                                 }
+                                Text {
+                                    text: track.bpm > 0 ? Math.round(track.bpm) + " BPM" : "";
+                                    color: #585b70;
+                                    vertical-alignment: center;
+                                    width: 60px;
+                                    horizontal-alignment: right;
+                                    font-size: 10px;
+                                }
                             }
 
                             main-ta := TouchArea {
@@ -871,6 +830,34 @@ export component AppWindow inherits Window {
                             }
                         }
 
+                        // Expand / collapse arrow — always present so arrow-ta is addressable
+                        Rectangle {
+                            width: 32px;
+                            height: 44px;
+                            opacity: row-hovered || is-expanded ? 1.0 : 0.0;
+                            background: arrow-ta.has-hover ? #313244 : transparent;
+                            border-radius: 4px;
+
+                            Text {
+                                text: is-expanded ? "▼" : "▶";
+                                color: is-expanded ? #89b4fa : #6c7086;
+                                font-size: 9px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            arrow-ta := TouchArea {
+                                clicked => {
+                                    if is-expanded {
+                                        root.expanded-track-id = -1;
+                                    } else {
+                                        root.expanded-track-id = track.id;
+                                        root.expand-track(track.id);
+                                    }
+                                }
+                            }
+                        }
+
                         // Remove-from-playlist button — always in layout, zero-width when not
                         // in playlist view so rm-ta is always addressable for has-hover above.
                         Rectangle {
@@ -903,7 +890,6 @@ export component AppWindow inherits Window {
                         duration-formatted: root.expanded-track-duration-formatted;
                         tags: root.expanded-track-tags;
                         playlists: root.expanded-track-playlists;
-                        playlists-open: root.expanded-playlists-open;
                         notes: root.expanded-track-notes;
                         remove-tag(tid) => { root.remove-tag-from-expanded(tid); }
                         navigate-tag(tid) => {
@@ -919,9 +905,6 @@ export component AppWindow inherits Window {
                             root.nav-id = pid;
                             root.nav-dir = "";
                             root.nav-playlist(pid);
-                        }
-                        toggle-playlists-open => {
-                            root.expanded-playlists-open = !root.expanded-playlists-open;
                         }
                         notes-edited(text) => { root.save-notes(track.id, text); }
                     }
@@ -1086,6 +1069,12 @@ export component AppWindow inherits Window {
                             wrap: no-wrap;
                         }
 
+                        if root.now-playing-bpm > 0: Text {
+                            text: Math.round(root.now-playing-bpm) + " BPM";
+                            font-size: 10px;
+                            color: #585b70;
+                        }
+
                         HorizontalLayout {
                             spacing: 4px;
                             alignment: start;
@@ -1133,6 +1122,15 @@ export component AppWindow inherits Window {
                 }
             }
         }
+    }
+
+    // Analysis counter — bottom-right overlay while background analysis is running
+    if root.pending-analysis-count > 0: Text {
+        x: root.width - self.preferred-width - 12px;
+        y: root.height - self.preferred-height - 8px;
+        text: "Analyzing " + root.pending-analysis-count + " tracks…";
+        color: #585b70;
+        font-size: 11px;
     }
 
     // Drag ghost — floats above everything while dragging

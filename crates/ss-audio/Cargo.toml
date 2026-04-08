@@ -14,3 +14,5 @@ flume             = "0.11"
 crossbeam-channel = "0.5"
 anyhow   = { workspace = true }
 tracing  = { workspace = true }
+# FFT-based frequency-band analysis for waveform coloring
+spectrum-analyzer = "1.7"

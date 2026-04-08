@@ -40,6 +40,7 @@ fn row_to_track(row: &sqlx::sqlite::SqliteRow) -> Track {
         artist: row.get("artist"),
         album: row.get("album"),
         duration_secs: row.get("duration_secs"),
+        bpm: row.try_get("bpm").ok(),
     }
 }
 
@@ -96,13 +97,14 @@ impl Db {
             artist: t.artist.clone(),
             album: t.album.clone(),
             duration_secs: t.duration_secs,
+            bpm: None,
         })
     }
 
     /// Fetch a track by its primary key. Returns `None` if not found.
     pub async fn get_track(&self, id: i64) -> Result<Option<Track>> {
         let row = sqlx::query(
-            "SELECT id, path, title, artist, album, duration_secs FROM tracks WHERE id = ?",
+            "SELECT id, path, title, artist, album, duration_secs, bpm FROM tracks WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -116,7 +118,7 @@ impl Db {
     pub async fn get_track_by_path(&self, path: &Path) -> Result<Option<Track>> {
         let path_str = path.to_string_lossy().into_owned();
         let row = sqlx::query(
-            "SELECT id, path, title, artist, album, duration_secs FROM tracks WHERE path = ?",
+            "SELECT id, path, title, artist, album, duration_secs, bpm FROM tracks WHERE path = ?",
         )
         .bind(&path_str)
         .fetch_optional(&self.pool)
@@ -129,7 +131,7 @@ impl Db {
     /// Return all tracks ordered by id.
     pub async fn list_tracks(&self) -> Result<Vec<Track>> {
         let rows = sqlx::query(
-            "SELECT id, path, title, artist, album, duration_secs FROM tracks ORDER BY id",
+            "SELECT id, path, title, artist, album, duration_secs, bpm FROM tracks ORDER BY id",
         )
         .fetch_all(&self.pool)
         .await
@@ -232,6 +234,85 @@ impl Db {
         }))
     }
 
+    /// Persist a frequency-band waveform for a track.
+    /// `bands` is a slice of [low_rms, mid_rms, high_rms] per bucket, stored
+    /// interleaved as little-endian f32 bytes: [low0, mid0, high0, low1, ...].
+    pub async fn save_waveform_bands(&self, track_id: i64, bands: &[[f32; 3]]) -> Result<()> {
+        let bytes: Vec<u8> = bands
+            .iter()
+            .flat_map(|b| b.iter().flat_map(|v| v.to_le_bytes()))
+            .collect();
+        sqlx::query(
+            r#"INSERT INTO waveforms (track_id, data) VALUES (?, ?)
+               ON CONFLICT(track_id) DO UPDATE SET data = excluded.data"#,
+        )
+        .bind(track_id)
+        .bind(&bytes)
+        .execute(&self.pool)
+        .await
+        .context("save_waveform_bands failed")?;
+        Ok(())
+    }
+
+    /// Fetch a frequency-band waveform for a track.
+    /// Returns `None` if not yet analysed, or if the stored blob is in the
+    /// old mono format (blob_len % 12 != 0).
+    pub async fn get_waveform_bands(&self, track_id: i64) -> Result<Option<Vec<[f32; 3]>>> {
+        let row = sqlx::query("SELECT data FROM waveforms WHERE track_id = ?")
+            .bind(track_id)
+            .fetch_optional(&self.pool)
+            .await
+            .context("get_waveform_bands failed")?;
+
+        Ok(row.and_then(|r| {
+            let bytes: Vec<u8> = r.get("data");
+            if !bytes.len().is_multiple_of(12) {
+                return None; // old mono format — will be regenerated
+            }
+            Some(
+                bytes
+                    .chunks_exact(12)
+                    .map(|b| {
+                        [
+                            f32::from_le_bytes(b[0..4].try_into().unwrap()),
+                            f32::from_le_bytes(b[4..8].try_into().unwrap()),
+                            f32::from_le_bytes(b[8..12].try_into().unwrap()),
+                        ]
+                    })
+                    .collect(),
+            )
+        }))
+    }
+
+    /// Save the detected BPM for a track.
+    pub async fn save_bpm(&self, track_id: i64, bpm: f32) -> Result<()> {
+        sqlx::query("UPDATE tracks SET bpm = ? WHERE id = ?")
+            .bind(bpm)
+            .bind(track_id)
+            .execute(&self.pool)
+            .await
+            .context("save_bpm failed")?;
+        Ok(())
+    }
+
+    /// Return all (track_id, path) pairs that are missing a waveform or BPM.
+    /// These are queued for background analysis on startup and after each scan.
+    pub async fn list_tracks_needing_analysis(&self) -> Result<Vec<(i64, std::path::PathBuf)>> {
+        let rows = sqlx::query(
+            r#"SELECT t.id, t.path FROM tracks t
+               LEFT JOIN waveforms w ON w.track_id = t.id
+               WHERE w.track_id IS NULL OR t.bpm IS NULL
+               ORDER BY t.id"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("list_tracks_needing_analysis failed")?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get("id"), std::path::PathBuf::from(r.get::<String, _>("path"))))
+            .collect())
+    }
+
     // ── Album art ─────────────────────────────────────────────────────────────
 
     /// Persist raw JPEG/PNG bytes for a track's cover art. Upsert semantics.
@@ -300,7 +381,7 @@ impl Db {
             format!("{}/", dir)
         };
         let rows = sqlx::query(
-            "SELECT id, path, title, artist, album, duration_secs FROM tracks WHERE path LIKE ? || '%' ORDER BY id",
+            "SELECT id, path, title, artist, album, duration_secs, bpm FROM tracks WHERE path LIKE ? || '%' ORDER BY id",
         )
         .bind(&prefix)
         .fetch_all(&self.pool)
@@ -383,7 +464,7 @@ impl Db {
     /// Return tracks in a playlist ordered by position.
     pub async fn list_tracks_in_playlist(&self, playlist_id: i64) -> Result<Vec<Track>> {
         let rows = sqlx::query(
-            r#"SELECT t.id, t.path, t.title, t.artist, t.album, t.duration_secs
+            r#"SELECT t.id, t.path, t.title, t.artist, t.album, t.duration_secs, t.bpm
                FROM tracks t
                JOIN playlist_tracks pt ON pt.track_id = t.id
                WHERE pt.playlist_id = ?
@@ -510,7 +591,7 @@ impl Db {
     /// Return tracks that have a given tag assigned.
     pub async fn list_tracks_with_tag(&self, tag_id: i64) -> Result<Vec<Track>> {
         let rows = sqlx::query(
-            r#"SELECT t.id, t.path, t.title, t.artist, t.album, t.duration_secs
+            r#"SELECT t.id, t.path, t.title, t.artist, t.album, t.duration_secs, t.bpm
                FROM tracks t
                JOIN track_tags tt ON tt.track_id = t.id
                WHERE tt.tag_id = ?
