@@ -238,6 +238,8 @@ export component TrackList inherits VerticalLayout {
     in-out property <length> drag-x: 0;
     in-out property <length> drag-y: 0;
     in-out property <int>    drag-over-playlist-id: -1;
+    in-out property <bool>   drag-is-multi: false;
+    in-out property <int>    drag-count: 0;
     in-out property <int>    nav-kind;
     in-out property <int>    nav-id;
     in-out property <string> nav-dir;
@@ -251,6 +253,8 @@ export component TrackList inherits VerticalLayout {
     callback remove-from-playlist(int, int);
     callback nav-tag(int);
     callback nav-playlist(int);
+    callback track-clicked(int, bool, bool);       // id, shift, meta
+    callback add-selected-to-playlist(int);        // playlist-id
 
     in-out property <string> search-filter: "";
     callback search-filter-changed(string);
@@ -375,10 +379,24 @@ export component TrackList inherits VerticalLayout {
             property <length> press-y: 0;
             property <bool>   did-drag: false;
             property <bool>   row-hovered: main-ta.has-hover || rm-ta.has-hover || arrow-ta.has-hover;
+            property <bool>   last-shift: false;
+            property <bool>   last-meta: false;
 
             background: root.current-track-id == track.id
                 ? #313244
-                : (row-hovered ? #26273a : transparent);
+                : track.selected
+                    ? #252535
+                    : (row-hovered ? #26273a : transparent);
+
+            // Left selection indicator bar
+            Rectangle {
+                x: 0; y: 0;
+                width: 3px;
+                height: parent.height;
+                background: track.selected
+                    ? (root.current-track-id == track.id ? #89b4fa : #585b7a)
+                    : transparent;
+            }
 
             // ── Top row ───────────────────────────────────────────────
             HorizontalLayout {
@@ -410,6 +428,16 @@ export component TrackList inherits VerticalLayout {
                         vertical-alignment: center;
                         visible: track.art.width == 0;
                     }
+
+                    // Click album art to play
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.current-track-id = track.id;
+                            root.is-playing = true;
+                            root.play-track(track.id);
+                        }
+                    }
                 }
 
                 // Main track info + drag/play area
@@ -423,7 +451,7 @@ export component TrackList inherits VerticalLayout {
 
                         Text {
                             text: track.title != "" ? track.title : "(unknown)";
-                            color: root.current-track-id == track.id ? #cdd6f4 : #bac2de;
+                            color: (root.current-track-id == track.id || track.selected) ? #cdd6f4 : #bac2de;
                             font-weight: root.current-track-id == track.id ? 700 : 400;
                             vertical-alignment: center;
                             horizontal-stretch: 1;
@@ -451,21 +479,36 @@ export component TrackList inherits VerticalLayout {
                                 press-x = self.mouse-x;
                                 press-y = self.mouse-y;
                                 did-drag = false;
+                                last-shift = e.modifiers.shift;
+                                last-meta = e.modifiers.meta;
                             }
                             if e.kind == PointerEventKind.up && root.drag-track-id == track.id {
                                 did-drag = true;
                                 if root.drag-over-playlist-id >= 0 {
-                                    root.add-to-playlist(root.drag-over-playlist-id, track.id);
+                                    if root.drag-is-multi {
+                                        root.add-selected-to-playlist(root.drag-over-playlist-id);
+                                    } else {
+                                        root.add-to-playlist(root.drag-over-playlist-id, track.id);
+                                    }
                                 }
                                 root.drag-track-id = -1;
                                 root.drag-title = "";
+                                root.drag-is-multi = false;
                             }
                         }
                         moved => {
                             if (self.mouse-x - press-x > 8px || press-x - self.mouse-x > 8px
                                 || self.mouse-y - press-y > 8px || press-y - self.mouse-y > 8px) {
-                                root.drag-track-id = track.id;
-                                root.drag-title = track.title != "" ? track.title : "(unknown)";
+                                if root.drag-track-id < 0 {
+                                    root.drag-track-id = track.id;
+                                    if track.selected {
+                                        root.drag-is-multi = true;
+                                        root.drag-title = root.drag-count + " tracks";
+                                    } else {
+                                        root.drag-is-multi = false;
+                                        root.drag-title = track.title != "" ? track.title : "(unknown)";
+                                    }
+                                }
                             }
                             if root.drag-track-id == track.id {
                                 root.drag-x = self.absolute-position.x + self.mouse-x;
@@ -474,9 +517,7 @@ export component TrackList inherits VerticalLayout {
                         }
                         clicked => {
                             if !did-drag {
-                                root.current-track-id = track.id;
-                                root.is-playing = true;
-                                root.play-track(track.id);
+                                root.track-clicked(track.id, last-shift, last-meta);
                             }
                             did-drag = false;
                         }

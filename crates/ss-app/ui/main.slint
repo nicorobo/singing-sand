@@ -54,6 +54,8 @@ export component AppWindow inherits Window {
     in-out property <length> drag-x: 0;
     in-out property <length> drag-y: 0;
     in-out property <int>    drag-over-playlist-id: -1;
+    in-out property <bool>   drag-is-multi: false;
+    in-out property <int>    drag-count: 0;
 
     // Transport callbacks
     callback play-track(int);
@@ -96,6 +98,10 @@ export component AppWindow inherits Window {
     // Playlist track management
     callback add-to-playlist(int, int);
     callback remove-from-playlist(int, int);
+
+    // Multiselect
+    callback track-clicked(int, bool, bool);
+    callback add-selected-to-playlist(int);
 
     // Settings window — opened from Rust via on_settings_clicked
     callback settings-clicked();
@@ -160,6 +166,8 @@ export component AppWindow inherits Window {
                 drag-x                <=> root.drag-x;
                 drag-y                <=> root.drag-y;
                 drag-over-playlist-id <=> root.drag-over-playlist-id;
+                drag-is-multi         <=> root.drag-is-multi;
+                drag-count            <=> root.drag-count;
                 nav-kind              <=> root.nav-kind;
                 nav-id                <=> root.nav-id;
                 nav-dir               <=> root.nav-dir;
@@ -173,6 +181,8 @@ export component AppWindow inherits Window {
                 remove-from-playlist(pl, tr) => { root.remove-from-playlist(pl, tr); }
                 nav-tag(id)               => { root.nav-tag(id); }
                 nav-playlist(id)          => { root.nav-playlist(id); }
+                track-clicked(id, sh, me) => { root.track-clicked(id, sh, me); }
+                add-selected-to-playlist(pl) => { root.add-selected-to-playlist(pl); }
 
                 search-filter             <=> root.search-filter;
                 search-filter-changed(s)  => { root.search-filter-changed(s); }

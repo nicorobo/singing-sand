@@ -60,6 +60,7 @@ fn track_to_item(t: &Track) -> TrackItem {
         album: t.album.clone().unwrap_or_default().into(),
         duration_secs: t.duration_secs.unwrap_or(0.0) as f32,
         art: slint::Image::default(),
+        selected: false,
     }
 }
 
@@ -655,6 +656,10 @@ fn cmd_gui() -> Result<()> {
 
     let art_cache: ArtCache = Arc::new(Mutex::new(HashMap::new()));
 
+    // Track selection state (multiselect)
+    let selection: Arc<Mutex<HashSet<i64>>> = Arc::new(Mutex::new(HashSet::new()));
+    let last_selected_id: Arc<Mutex<Option<i64>>> = Arc::new(Mutex::new(None));
+
     let initial_tracks = rt.block_on(db.list_tracks())?;
     window.set_tracks(tracks_to_model_rc(&initial_tracks));
     // Clone for art loader so the move into spawn_art_loader is independent.
@@ -909,18 +914,25 @@ fn cmd_gui() -> Result<()> {
         let weak = window.as_weak();
         let rt_handle = rt_handle.clone();
         let art_cache = Arc::clone(&art_cache);
+        let selection = Arc::clone(&selection);
+        let last_selected_id = Arc::clone(&last_selected_id);
         window.on_nav_all(move || {
             let db = Arc::clone(&db);
             let weak = weak.clone();
             let rth = rt_handle.clone();
             let rth2 = rth.clone();
             let art_cache = Arc::clone(&art_cache);
+            let selection = Arc::clone(&selection);
+            let last_selected_id = Arc::clone(&last_selected_id);
             rth.spawn(async move {
                 let tracks = db.list_tracks().await.unwrap_or_default();
                 let tracks_for_ui = tracks.clone();
                 let weak2 = weak.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(w) = weak2.upgrade() {
+                        selection.lock().unwrap().clear();
+                        *last_selected_id.lock().unwrap() = None;
+                        w.set_drag_count(0);
                         w.set_tracks(tracks_to_model_rc(&tracks_for_ui));
                         w.set_expanded_track_id(-1);
                     }
@@ -935,6 +947,8 @@ fn cmd_gui() -> Result<()> {
         let weak = window.as_weak();
         let rt_handle = rt_handle.clone();
         let art_cache = Arc::clone(&art_cache);
+        let selection = Arc::clone(&selection);
+        let last_selected_id = Arc::clone(&last_selected_id);
         window.on_nav_select_dir(move |dir_path| {
             let db = Arc::clone(&db);
             let weak = weak.clone();
@@ -942,12 +956,17 @@ fn cmd_gui() -> Result<()> {
             let rth2 = rth.clone();
             let dir_str = dir_path.to_string();
             let art_cache = Arc::clone(&art_cache);
+            let selection = Arc::clone(&selection);
+            let last_selected_id = Arc::clone(&last_selected_id);
             rth.spawn(async move {
                 let tracks = db.list_tracks_in_dir(&dir_str).await.unwrap_or_default();
                 let tracks_for_ui = tracks.clone();
                 let weak2 = weak.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(w) = weak2.upgrade() {
+                        selection.lock().unwrap().clear();
+                        *last_selected_id.lock().unwrap() = None;
+                        w.set_drag_count(0);
                         w.set_tracks(tracks_to_model_rc(&tracks_for_ui));
                         w.set_expanded_track_id(-1);
                     }
@@ -962,12 +981,16 @@ fn cmd_gui() -> Result<()> {
         let weak = window.as_weak();
         let rt_handle = rt_handle.clone();
         let art_cache = Arc::clone(&art_cache);
+        let selection = Arc::clone(&selection);
+        let last_selected_id = Arc::clone(&last_selected_id);
         window.on_nav_playlist(move |playlist_id| {
             let db = Arc::clone(&db);
             let weak = weak.clone();
             let rth = rt_handle.clone();
             let rth2 = rth.clone();
             let art_cache = Arc::clone(&art_cache);
+            let selection = Arc::clone(&selection);
+            let last_selected_id = Arc::clone(&last_selected_id);
             rth.spawn(async move {
                 let tracks =
                     db.list_tracks_in_playlist(playlist_id as i64).await.unwrap_or_default();
@@ -975,6 +998,9 @@ fn cmd_gui() -> Result<()> {
                 let weak2 = weak.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(w) = weak2.upgrade() {
+                        selection.lock().unwrap().clear();
+                        *last_selected_id.lock().unwrap() = None;
+                        w.set_drag_count(0);
                         w.set_tracks(tracks_to_model_rc(&tracks_for_ui));
                         w.set_expanded_track_id(-1);
                     }
@@ -989,18 +1015,25 @@ fn cmd_gui() -> Result<()> {
         let weak = window.as_weak();
         let rt_handle = rt_handle.clone();
         let art_cache = Arc::clone(&art_cache);
+        let selection = Arc::clone(&selection);
+        let last_selected_id = Arc::clone(&last_selected_id);
         window.on_nav_tag(move |tag_id| {
             let db = Arc::clone(&db);
             let weak = weak.clone();
             let rth = rt_handle.clone();
             let rth2 = rth.clone();
             let art_cache = Arc::clone(&art_cache);
+            let selection = Arc::clone(&selection);
+            let last_selected_id = Arc::clone(&last_selected_id);
             rth.spawn(async move {
                 let tracks = db.list_tracks_with_tag(tag_id as i64).await.unwrap_or_default();
                 let tracks_for_ui = tracks.clone();
                 let weak2 = weak.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(w) = weak2.upgrade() {
+                        selection.lock().unwrap().clear();
+                        *last_selected_id.lock().unwrap() = None;
+                        w.set_drag_count(0);
                         w.set_tracks(tracks_to_model_rc(&tracks_for_ui));
                         w.set_expanded_track_id(-1);
                     }
@@ -1017,12 +1050,16 @@ fn cmd_gui() -> Result<()> {
         let weak = window.as_weak();
         let rt_handle = rt_handle.clone();
         let art_cache = Arc::clone(&art_cache);
+        let selection = Arc::clone(&selection);
+        let last_selected_id = Arc::clone(&last_selected_id);
         window.on_search_filter_changed(move |filter_str| {
             let db = Arc::clone(&db);
             let weak = weak.clone();
             let rth = rt_handle.clone();
             let rth2 = rth.clone();
             let art_cache = Arc::clone(&art_cache);
+            let selection = Arc::clone(&selection);
+            let last_selected_id = Arc::clone(&last_selected_id);
             let needle = filter_str.to_string();
 
             // Snapshot nav state on the Slint thread before spawning.
@@ -1062,6 +1099,9 @@ fn cmd_gui() -> Result<()> {
                 let weak2 = weak.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(w) = weak2.upgrade() {
+                        selection.lock().unwrap().clear();
+                        *last_selected_id.lock().unwrap() = None;
+                        w.set_drag_count(0);
                         w.set_tracks(tracks_to_model_rc(&tracks_for_ui));
                         w.set_expanded_track_id(-1);
                     }
@@ -1132,6 +1172,97 @@ fn cmd_gui() -> Result<()> {
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(w) = weak.upgrade() {
                         w.set_sidebar_tags(slint::ModelRc::new(slint::VecModel::from(entries)));
+                    }
+                });
+            });
+        });
+    }
+
+    // ── Multiselect ──────────────────────────────────────────────────────────
+
+    {
+        let weak = window.as_weak();
+        let selection = Arc::clone(&selection);
+        let last_selected_id = Arc::clone(&last_selected_id);
+        window.on_track_clicked(move |id, shift, meta| {
+            let id = id as i64;
+            let Some(w) = weak.upgrade() else { return };
+            let model = w.get_tracks();
+            let mut sel = selection.lock().unwrap();
+            let mut last = last_selected_id.lock().unwrap();
+
+            if meta {
+                // CMD+click: toggle membership
+                if sel.contains(&id) {
+                    sel.remove(&id);
+                } else {
+                    sel.insert(id);
+                    *last = Some(id);
+                }
+            } else if shift {
+                // Shift+click: range select from anchor to clicked track
+                let positions: Vec<i64> =
+                    (0..model.row_count()).filter_map(|i| model.row_data(i).map(|r| r.id as i64)).collect();
+                let anchor = last.unwrap_or(id);
+                let anchor_pos = positions.iter().position(|&x| x == anchor);
+                let clicked_pos = positions.iter().position(|&x| x == id);
+                if let (Some(a), Some(b)) = (anchor_pos, clicked_pos) {
+                    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+                    sel.clear();
+                    for &track_id in &positions[lo..=hi] {
+                        sel.insert(track_id);
+                    }
+                    // anchor stays fixed for subsequent shift-clicks
+                }
+            } else {
+                // Plain click: select only this track
+                sel.clear();
+                sel.insert(id);
+                *last = Some(id);
+            }
+
+            let new_sel = sel.clone();
+            let count = new_sel.len() as i32;
+            drop(sel);
+            drop(last);
+
+            // Push selection state into the model
+            for i in 0..model.row_count() {
+                if let Some(mut row) = model.row_data(i) {
+                    let is_sel = new_sel.contains(&(row.id as i64));
+                    if row.selected != is_sel {
+                        row.selected = is_sel;
+                        model.set_row_data(i, row);
+                    }
+                }
+            }
+            w.set_drag_count(count);
+        });
+    }
+
+    {
+        let db = Arc::clone(&db);
+        let weak = window.as_weak();
+        let rt_handle = rt_handle.clone();
+        let selection = Arc::clone(&selection);
+        window.on_add_selected_to_playlist(move |playlist_id| {
+            let ids: Vec<i64> = selection.lock().unwrap().iter().copied().collect();
+            if ids.is_empty() {
+                return;
+            }
+            let db = Arc::clone(&db);
+            let weak = weak.clone();
+            rt_handle.spawn(async move {
+                for track_id in ids {
+                    if let Err(e) = db.add_track_to_playlist(track_id, playlist_id as i64).await {
+                        tracing::warn!("add_selected_to_playlist failed for {track_id}: {e}");
+                    }
+                }
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(w) = weak.upgrade() {
+                        if w.get_nav_kind() == 2 && w.get_nav_id() == playlist_id {
+                            w.invoke_nav_playlist(playlist_id);
+                        }
                     }
                 });
             });
