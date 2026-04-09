@@ -59,14 +59,9 @@ pub fn render_to_pixels(
         let bucket = (x * slice_len) / w;
         let b = slice.get(bucket).copied().unwrap_or_default();
 
-        // Zero out disabled bands.
-        let low  = if settings.show_low  { b.low  * settings.low_gain  } else { 0.0 };
-        let mid  = if settings.show_mid  { b.mid  * settings.mid_gain  } else { 0.0 };
-        let high = if settings.show_high { b.high * settings.high_gain } else { 0.0 };
-
-        let low  = (low  * settings.amplitude_scale).clamp(0.0, 1.0);
-        let mid  = (mid  * settings.amplitude_scale).clamp(0.0, 1.0);
-        let high = (high * settings.amplitude_scale).clamp(0.0, 1.0);
+        let low  = (b.low  * settings.low_gain  * settings.amplitude_scale).clamp(0.0, 1.0);
+        let mid  = (b.mid  * settings.mid_gain  * settings.amplitude_scale).clamp(0.0, 1.0);
+        let high = (b.high * settings.high_gain * settings.amplitude_scale).clamp(0.0, 1.0);
 
         let amplitude = ((low + mid + high) / 3.0).clamp(0.0, 1.0);
         if amplitude == 0.0 {
@@ -114,11 +109,10 @@ fn pick_color(
 ) -> Rgb8Pixel {
     match scheme {
         ColorScheme::AdditivePeachBlueLavender => {
-            let total = low + mid + high + 1e-6;
             Rgb8Pixel {
-                r: ((low * 250.0 + mid * 137.0 + high * 203.0) / total) as u8,
-                g: ((low * 179.0 + mid * 180.0 + high * 166.0) / total) as u8,
-                b: ((low * 135.0 + mid * 250.0 + high * 247.0) / total) as u8,
+                r: (low * 250.0 + mid * 137.0 + high * 203.0).min(255.0) as u8,
+                g: (low * 179.0 + mid * 180.0 + high * 166.0).min(255.0) as u8,
+                b: (low * 135.0 + mid * 250.0 + high * 247.0).min(255.0) as u8,
             }
         }
         ColorScheme::Monochrome | ColorScheme::Grayscale => {

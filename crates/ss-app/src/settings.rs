@@ -2,9 +2,6 @@ use anyhow::Result;
 use ss_db::Db;
 use ss_waveform::{ColorScheme, DisplayStyle, WaveformRenderSettings};
 
-const KEY_SHOW_LOW:        &str = "waveform.show_low";
-const KEY_SHOW_MID:        &str = "waveform.show_mid";
-const KEY_SHOW_HIGH:       &str = "waveform.show_high";
 const KEY_AMPLITUDE_SCALE: &str = "waveform.amplitude_scale";
 const KEY_LOW_GAIN:        &str = "waveform.low_gain";
 const KEY_MID_GAIN:        &str = "waveform.mid_gain";
@@ -26,15 +23,6 @@ impl Default for AppSettings {
 pub async fn load_settings(db: &Db) -> Result<AppSettings> {
     let def = WaveformRenderSettings::default();
 
-    let show_low = db.get_setting(KEY_SHOW_LOW).await?
-        .and_then(|v| v.parse::<bool>().ok())
-        .unwrap_or(def.show_low);
-    let show_mid = db.get_setting(KEY_SHOW_MID).await?
-        .and_then(|v| v.parse::<bool>().ok())
-        .unwrap_or(def.show_mid);
-    let show_high = db.get_setting(KEY_SHOW_HIGH).await?
-        .and_then(|v| v.parse::<bool>().ok())
-        .unwrap_or(def.show_high);
     let amplitude_scale = db.get_setting(KEY_AMPLITUDE_SCALE).await?
         .and_then(|v| v.parse::<f32>().ok())
         .unwrap_or(def.amplitude_scale);
@@ -59,9 +47,6 @@ pub async fn load_settings(db: &Db) -> Result<AppSettings> {
 
     Ok(AppSettings {
         waveform: WaveformRenderSettings {
-            show_low,
-            show_mid,
-            show_high,
             amplitude_scale,
             low_gain,
             mid_gain,
@@ -75,9 +60,6 @@ pub async fn load_settings(db: &Db) -> Result<AppSettings> {
 
 pub async fn save_settings(db: &Db, s: &AppSettings) -> Result<()> {
     let w = &s.waveform;
-    db.set_setting(KEY_SHOW_LOW,        &w.show_low.to_string()).await?;
-    db.set_setting(KEY_SHOW_MID,        &w.show_mid.to_string()).await?;
-    db.set_setting(KEY_SHOW_HIGH,       &w.show_high.to_string()).await?;
     db.set_setting(KEY_AMPLITUDE_SCALE, &w.amplitude_scale.to_string()).await?;
     db.set_setting(KEY_LOW_GAIN,        &w.low_gain.to_string()).await?;
     db.set_setting(KEY_MID_GAIN,        &w.mid_gain.to_string()).await?;

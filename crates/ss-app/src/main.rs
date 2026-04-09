@@ -167,6 +167,7 @@ async fn start_playback(
     weak: slint::Weak<AppWindow>,
     render_settings: Arc<Mutex<WaveformRenderSettings>>,
     current_bands: Arc<Mutex<Vec<WaveformBucket>>>,
+    settings_win_weak: slint::Weak<SettingsWindow>,
 ) {
     let track = match db.get_track(track_id).await {
         Ok(Some(t)) => t,
@@ -259,10 +260,15 @@ async fn start_playback(
 
     let settings_snap = render_settings.lock().unwrap().clone();
     let pixel_buf = render_to_pixels(&buckets, &settings_snap, ViewPort::default());
+    let preview_vp = ViewPort { width: 288, height: 60, start_pct: 0.0, end_pct: 1.0 };
+    let preview_buf = render_to_pixels(&buckets, &settings_snap, preview_vp);
 
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(w) = weak.upgrade() {
             w.set_waveform_image(slint::Image::from_rgb8(pixel_buf));
+        }
+        if let Some(sw) = settings_win_weak.upgrade() {
+            sw.set_preview_waveform(slint::Image::from_rgb8(preview_buf));
         }
     });
 }
@@ -618,6 +624,27 @@ fn rerender_waveform(
     });
 }
 
+/// Re-render the settings preview waveform and push it to the settings window.
+fn rerender_settings_preview(
+    render_settings: &Arc<Mutex<WaveformRenderSettings>>,
+    current_bands: &Arc<Mutex<Vec<WaveformBucket>>>,
+    sw: &slint::Weak<SettingsWindow>,
+) {
+    let bands = current_bands.lock().unwrap().clone();
+    if bands.is_empty() {
+        return;
+    }
+    let s = render_settings.lock().unwrap().clone();
+    let vp = ViewPort { width: 288, height: 60, start_pct: 0.0, end_pct: 1.0 };
+    let buf = render_to_pixels(&bands, &s, vp);
+    let sw = sw.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(w) = sw.upgrade() {
+            w.set_preview_waveform(slint::Image::from_rgb8(buf));
+        }
+    });
+}
+
 /// Launch the Slint GUI.
 fn cmd_gui() -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -639,9 +666,6 @@ fn cmd_gui() -> Result<()> {
     let settings_win = SettingsWindow::new().context("failed to create settings window")?;
     {
         let w = &app_settings.waveform;
-        settings_win.set_show_low(w.show_low);
-        settings_win.set_show_mid(w.show_mid);
-        settings_win.set_show_high(w.show_high);
         settings_win.set_amplitude_scale(w.amplitude_scale);
         settings_win.set_low_gain(w.low_gain);
         settings_win.set_mid_gain(w.mid_gain);
@@ -651,6 +675,7 @@ fn cmd_gui() -> Result<()> {
         settings_win.set_normalize(w.normalize);
     }
     let settings_win = Arc::new(settings_win);
+    let settings_win_weak = settings_win.as_weak();
 
     // ── Initial data load ────────────────────────────────────────────────────
 
@@ -1541,13 +1566,14 @@ fn cmd_gui() -> Result<()> {
         let rt_handle = rt_handle.clone();
         let render_settings = Arc::clone(&render_settings);
         let current_bands = Arc::clone(&current_bands);
+        let sw = settings_win_weak.clone();
         window.on_play_track(move |id| {
             let engine = Arc::clone(&engine);
             let db = Arc::clone(&db);
             let weak = weak.clone();
             let rs = Arc::clone(&render_settings);
             let cb = Arc::clone(&current_bands);
-            rt_handle.spawn(start_playback(id as i64, db, engine, weak, rs, cb));
+            rt_handle.spawn(start_playback(id as i64, db, engine, weak, rs, cb, sw.clone()));
         });
     }
 
@@ -1560,6 +1586,7 @@ fn cmd_gui() -> Result<()> {
         let rt_handle = rt_handle.clone();
         let render_settings = Arc::clone(&render_settings);
         let current_bands = Arc::clone(&current_bands);
+        let sw = settings_win_weak.clone();
         window.on_next_track(move || {
             let engine = Arc::clone(&engine);
             let db = Arc::clone(&db);
@@ -1573,7 +1600,7 @@ fn cmd_gui() -> Result<()> {
                 if let Some(next_id) = find_adjacent_track(&tracks, current, 1) {
                     w.set_current_track_id(next_id);
                     w.set_is_playing(true);
-                    rt_handle.spawn(start_playback(next_id as i64, db, engine, weak, rs, cb));
+                    rt_handle.spawn(start_playback(next_id as i64, db, engine, weak, rs, cb, sw.clone()));
                 }
             }
         });
@@ -1586,6 +1613,7 @@ fn cmd_gui() -> Result<()> {
         let rt_handle = rt_handle.clone();
         let render_settings = Arc::clone(&render_settings);
         let current_bands = Arc::clone(&current_bands);
+        let sw = settings_win_weak.clone();
         window.on_prev_track(move || {
             let engine = Arc::clone(&engine);
             let db = Arc::clone(&db);
@@ -1599,7 +1627,7 @@ fn cmd_gui() -> Result<()> {
                 if let Some(prev_id) = find_adjacent_track(&tracks, current, -1) {
                     w.set_current_track_id(prev_id);
                     w.set_is_playing(true);
-                    rt_handle.spawn(start_playback(prev_id as i64, db, engine, weak, rs, cb));
+                    rt_handle.spawn(start_playback(prev_id as i64, db, engine, weak, rs, cb, sw.clone()));
                 }
             }
         });
@@ -1634,23 +1662,39 @@ fn cmd_gui() -> Result<()> {
     // ── Settings window callbacks ────────────────────────────────────────────
 
     {
-        let settings_win_weak: Arc<SettingsWindow> = Arc::clone(&settings_win);
+        let settings_win_arc = Arc::clone(&settings_win);
+        let render_settings2 = Arc::clone(&render_settings);
+        let current_bands2 = Arc::clone(&current_bands);
         window.on_settings_clicked(move || {
-            settings_win_weak.show().ok();
+            settings_win_arc.show().ok();
+            // Populate preview with current waveform on open.
+            rerender_settings_preview(&render_settings2, &current_bands2, &settings_win_arc.as_weak());
         });
     }
 
+    // Fires on every slider change: update settings + re-render waveform + re-render preview.
     macro_rules! settings_cb {
         ($method:ident, $field:ident, $val_ty:ty, $convert:expr) => {{
             let render_settings = Arc::clone(&render_settings);
             let current_bands = Arc::clone(&current_bands);
             let weak = window.as_weak();
-            let db = Arc::clone(&db);
-            let rt_handle = rt_handle.clone();
+            let sw = settings_win_weak.clone();
             settings_win.$method(move |val| {
                 let converted: $val_ty = ($convert)(val);
                 render_settings.lock().unwrap().$field = converted;
                 rerender_waveform(&render_settings, &current_bands, &weak);
+                rerender_settings_preview(&render_settings, &current_bands, &sw);
+            });
+        }};
+    }
+
+    // Fires on slider release only: persist current settings to DB.
+    macro_rules! save_cb {
+        ($method:ident) => {{
+            let render_settings = Arc::clone(&render_settings);
+            let db = Arc::clone(&db);
+            let rt_handle = rt_handle.clone();
+            settings_win.$method(move |_val| {
                 let s = render_settings.lock().unwrap().clone();
                 let db = Arc::clone(&db);
                 rt_handle.spawn(async move {
@@ -1660,16 +1704,41 @@ fn cmd_gui() -> Result<()> {
         }};
     }
 
-    settings_cb!(on_show_low_changed,        show_low,        bool, |v| v);
-    settings_cb!(on_show_mid_changed,        show_mid,        bool, |v| v);
-    settings_cb!(on_show_high_changed,       show_high,       bool, |v| v);
-    settings_cb!(on_amplitude_scale_changed, amplitude_scale, f32,  |v| v);
-    settings_cb!(on_low_gain_changed,        low_gain,        f32,  |v| v);
-    settings_cb!(on_mid_gain_changed,        mid_gain,        f32,  |v| v);
-    settings_cb!(on_high_gain_changed,       high_gain,       f32,  |v| v);
-    settings_cb!(on_display_style_changed,   display_style,   ss_waveform::DisplayStyle, |v: i32| int_to_display_style(v));
-    settings_cb!(on_color_scheme_changed,    color_scheme,    ss_waveform::ColorScheme,  |v: i32| int_to_color_scheme(v));
-    settings_cb!(on_normalize_changed,       normalize,       bool, |v| v);
+    // Sliders: changed = render, released = save
+    settings_cb!(on_amplitude_scale_changed, amplitude_scale, f32, |v| v);
+    settings_cb!(on_low_gain_changed,        low_gain,        f32, |v| v);
+    settings_cb!(on_mid_gain_changed,        mid_gain,        f32, |v| v);
+    settings_cb!(on_high_gain_changed,       high_gain,       f32, |v| v);
+    save_cb!(on_amplitude_scale_released);
+    save_cb!(on_low_gain_released);
+    save_cb!(on_mid_gain_released);
+    save_cb!(on_high_gain_released);
+
+    // ComboBox/CheckBox: single callback, render + save immediately
+    macro_rules! instant_cb {
+        ($method:ident, $field:ident, $val_ty:ty, $convert:expr) => {{
+            let render_settings = Arc::clone(&render_settings);
+            let current_bands = Arc::clone(&current_bands);
+            let weak = window.as_weak();
+            let sw = settings_win_weak.clone();
+            let db = Arc::clone(&db);
+            let rt_handle = rt_handle.clone();
+            settings_win.$method(move |val| {
+                let converted: $val_ty = ($convert)(val);
+                render_settings.lock().unwrap().$field = converted;
+                rerender_waveform(&render_settings, &current_bands, &weak);
+                rerender_settings_preview(&render_settings, &current_bands, &sw);
+                let s = render_settings.lock().unwrap().clone();
+                let db = Arc::clone(&db);
+                rt_handle.spawn(async move {
+                    let _ = save_settings(&db, &AppSettings { waveform: s }).await;
+                });
+            });
+        }};
+    }
+    instant_cb!(on_display_style_changed, display_style, ss_waveform::DisplayStyle, |v: i32| int_to_display_style(v));
+    instant_cb!(on_color_scheme_changed,  color_scheme,  ss_waveform::ColorScheme,  |v: i32| int_to_color_scheme(v));
+    instant_cb!(on_normalize_changed,     normalize,     bool, |v| v);
 
     // ── Audio event forwarding ───────────────────────────────────────────────
 

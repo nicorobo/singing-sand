@@ -4,12 +4,9 @@ export component SettingsWindow inherits Window {
     title: "Waveform Settings";
     background: #1e1e2e;
     preferred-width: 320px;
-    preferred-height: 460px;
+    preferred-height: 440px;
 
     // in-out properties (initialized from Rust on open)
-    in-out property <bool>  show-low:        true;
-    in-out property <bool>  show-mid:        true;
-    in-out property <bool>  show-high:       true;
     in-out property <float> amplitude-scale: 1.0;
     in-out property <float> low-gain:        1.0;
     in-out property <float> mid-gain:        1.0;
@@ -18,14 +15,19 @@ export component SettingsWindow inherits Window {
     in-out property <int>   color-scheme:    0;   // 0..3
     in-out property <bool>  normalize:       false;
 
-    // Callbacks fired immediately on change (no Apply button)
-    callback show-low-changed(bool);
-    callback show-mid-changed(bool);
-    callback show-high-changed(bool);
+    // Preview waveform image (rendered by Rust, pushed on every settings change)
+    in property <image> preview-waveform;
+
+    // Callbacks: xxx-changed fires on every change (render path)
+    //            xxx-released fires on mouse-up (DB-save path, sliders only)
     callback amplitude-scale-changed(float);
+    callback amplitude-scale-released(float);
     callback low-gain-changed(float);
+    callback low-gain-released(float);
     callback mid-gain-changed(float);
+    callback mid-gain-released(float);
     callback high-gain-changed(float);
+    callback high-gain-released(float);
     callback display-style-changed(int);
     callback color-scheme-changed(int);
     callback normalize-changed(bool);
@@ -42,39 +44,12 @@ export component SettingsWindow inherits Window {
             font-weight: 600;
         }
 
-        // ── Frequency bands ───────────────────────────────────────────────────
-        Text {
-            text: "FREQUENCY BANDS";
-            color: #45475a;
-            font-size: 10px;
-        }
-
-        HorizontalLayout {
-            spacing: 16px;
-            CheckBox {
-                text: "Low";
-                checked: root.show-low;
-                toggled => {
-                    root.show-low = self.checked;
-                    root.show-low-changed(self.checked);
-                }
-            }
-            CheckBox {
-                text: "Mid";
-                checked: root.show-mid;
-                toggled => {
-                    root.show-mid = self.checked;
-                    root.show-mid-changed(self.checked);
-                }
-            }
-            CheckBox {
-                text: "High";
-                checked: root.show-high;
-                toggled => {
-                    root.show-high = self.checked;
-                    root.show-high-changed(self.checked);
-                }
-            }
+        // ── Preview waveform ──────────────────────────────────────────────────
+        Image {
+            source: root.preview-waveform;
+            width: 100%;
+            height: 60px;
+            image-fit: fill;
         }
 
         // ── Amplitude scale ───────────────────────────────────────────────────
@@ -91,9 +66,12 @@ export component SettingsWindow inherits Window {
                 minimum: 0.1;
                 maximum: 4.0;
                 value: root.amplitude-scale;
-                released(v) => {
+                changed(v) => {
                     root.amplitude-scale = v;
                     root.amplitude-scale-changed(v);
+                }
+                released(v) => {
+                    root.amplitude-scale-released(v);
                 }
             }
             Text {
@@ -120,9 +98,12 @@ export component SettingsWindow inherits Window {
                 minimum: 0.0;
                 maximum: 4.0;
                 value: root.low-gain;
-                released(v) => {
+                changed(v) => {
                     root.low-gain = v;
                     root.low-gain-changed(v);
+                }
+                released(v) => {
+                    root.low-gain-released(v);
                 }
             }
         }
@@ -135,9 +116,12 @@ export component SettingsWindow inherits Window {
                 minimum: 0.0;
                 maximum: 4.0;
                 value: root.mid-gain;
-                released(v) => {
+                changed(v) => {
                     root.mid-gain = v;
                     root.mid-gain-changed(v);
+                }
+                released(v) => {
+                    root.mid-gain-released(v);
                 }
             }
         }
@@ -150,9 +134,12 @@ export component SettingsWindow inherits Window {
                 minimum: 0.0;
                 maximum: 4.0;
                 value: root.high-gain;
-                released(v) => {
+                changed(v) => {
                     root.high-gain = v;
                     root.high-gain-changed(v);
+                }
+                released(v) => {
+                    root.high-gain-released(v);
                 }
             }
         }

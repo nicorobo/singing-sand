@@ -75,6 +75,24 @@ pub fn analyze_track(path: &Path, num_buckets: usize) -> Result<AnalysisResult> 
     let mut fft_output = fft.make_output_vec();
     let mut fft_scratch = fft.make_scratch_vec();
 
+    // Pre-computed Hann window coefficients (avoids recomputing per FFT call).
+    let hann: Vec<f32> = (0..FFT_SIZE)
+        .map(|i| {
+            0.5 * (1.0
+                - (2.0 * std::f32::consts::PI * i as f32 / (FFT_SIZE - 1) as f32).cos())
+        })
+        .collect();
+
+    // Reusable FFT input buffer (avoids a heap allocation per FFT window).
+    let mut fft_input: Vec<f32> = vec![0.0f32; FFT_SIZE];
+
+    // Pre-computed bin boundary indices — same for every window given fixed sample_rate + FFT_SIZE.
+    let freq_resolution = sample_rate as f32 / FFT_SIZE as f32;
+    let fft_out_len = FFT_SIZE / 2 + 1;
+    let low_end_bin = (250.0 / freq_resolution) as usize;
+    let mid_end_bin = (4000.0 / freq_resolution) as usize;
+    let high_end_bin = ((20000.0 / freq_resolution) as usize).min(fft_out_len - 1);
+
     // Running frame counter (used to assign samples to buckets).
     let mut frame_cursor: usize = 0;
 
@@ -113,10 +131,14 @@ pub fn analyze_track(path: &Path, num_buckets: usize) -> Result<AnalysisResult> 
 
                 accumulate_fft_bands(
                     &fft_window,
-                    sample_rate,
+                    &hann,
                     &fft,
+                    &mut fft_input,
                     &mut fft_output,
                     &mut fft_scratch,
+                    low_end_bin,
+                    mid_end_bin,
+                    high_end_bin,
                     &mut buckets[bucket_center],
                 );
 
@@ -141,10 +163,14 @@ pub fn analyze_track(path: &Path, num_buckets: usize) -> Result<AnalysisResult> 
         let last_bucket = num_buckets - 1;
         accumulate_fft_bands(
             &fft_window,
-            sample_rate,
+            &hann,
             &fft,
+            &mut fft_input,
             &mut fft_output,
             &mut fft_scratch,
+            low_end_bin,
+            mid_end_bin,
+            high_end_bin,
             &mut buckets[last_bucket],
         );
     }
@@ -191,54 +217,39 @@ pub fn analyze_track(path: &Path, num_buckets: usize) -> Result<AnalysisResult> 
 ///
 /// Uses a real-valued FFT (N/2+1 complex outputs) for ~2× faster computation
 /// vs a full complex FFT.
+///
+/// `input` is a caller-owned scratch buffer of length FFT_SIZE (reused across calls).
+/// `hann` is the pre-computed Hann window (length FFT_SIZE).
+/// `low_end`, `mid_end`, `high_end` are pre-computed bin boundary indices.
 fn accumulate_fft_bands(
     window: &[f32],
-    sample_rate: u32,
+    hann: &[f32],
     fft: &std::sync::Arc<dyn realfft::RealToComplex<f32>>,
+    input: &mut Vec<f32>,
     output: &mut Vec<Complex<f32>>,
     scratch: &mut Vec<Complex<f32>>,
+    low_end: usize,
+    mid_end: usize,
+    high_end: usize,
     acc: &mut (f64, f64, f64, u64),
 ) {
-    let n = window.len();
-    // Apply Hann window into a mutable copy (realfft modifies input in-place).
-    let mut input: Vec<f32> = window
-        .iter()
-        .enumerate()
-        .map(|(i, &s)| {
-            let w = 0.5
-                * (1.0
-                    - (2.0 * std::f32::consts::PI * i as f32 / (n - 1) as f32).cos());
-            s * w
-        })
-        .collect();
+    // Apply Hann window into the reusable input buffer (no allocation).
+    for (dst, (&src, &w)) in input.iter_mut().zip(window.iter().zip(hann.iter())) {
+        *dst = src * w;
+    }
 
-    if fft.process_with_scratch(&mut input, output, scratch).is_err() {
+    if fft.process_with_scratch(input, output, scratch).is_err() {
         return;
     }
 
-    let freq_resolution = sample_rate as f32 / n as f32;
+    // Bin boundaries are pre-computed — no per-bin frequency arithmetic needed.
+    let sum_low: f64 = output[..low_end].iter().map(|c| c.norm_sqr() as f64).sum();
+    let sum_mid: f64 = output[low_end..mid_end].iter().map(|c| c.norm_sqr() as f64).sum();
+    let sum_high: f64 = output[mid_end..=high_end].iter().map(|c| c.norm_sqr() as f64).sum();
 
-    let mut sum_low = 0.0f64;
-    let mut cnt_low = 0u32;
-    let mut sum_mid = 0.0f64;
-    let mut cnt_mid = 0u32;
-    let mut sum_high = 0.0f64;
-    let mut cnt_high = 0u32;
-
-    for (i, c) in output.iter().enumerate() {
-        let f = i as f32 * freq_resolution;
-        let power = c.norm_sqr() as f64;
-        if f < 250.0 {
-            sum_low += power;
-            cnt_low += 1;
-        } else if f < 4000.0 {
-            sum_mid += power;
-            cnt_mid += 1;
-        } else if f <= 20000.0 {
-            sum_high += power;
-            cnt_high += 1;
-        }
-    }
+    let cnt_low = low_end;
+    let cnt_mid = mid_end - low_end;
+    let cnt_high = high_end - mid_end + 1;
 
     // Average squared magnitude per band → RMS-compatible accumulation.
     if cnt_low  > 0 { acc.0 += sum_low  / cnt_low  as f64; }

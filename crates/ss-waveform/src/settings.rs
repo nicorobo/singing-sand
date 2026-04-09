@@ -18,12 +18,8 @@ pub enum ColorScheme {
 }
 
 /// All visual parameters for waveform rendering.
-/// `Default` produces byte-identical output to the original `render_waveform_buffer`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WaveformRenderSettings {
-    pub show_low:        bool,
-    pub show_mid:        bool,
-    pub show_high:       bool,
     /// Global amplitude multiplier applied after per-band gains.
     pub amplitude_scale: f32,
     pub low_gain:        f32,
@@ -38,9 +34,6 @@ pub struct WaveformRenderSettings {
 impl Default for WaveformRenderSettings {
     fn default() -> Self {
         Self {
-            show_low:        true,
-            show_mid:        true,
-            show_high:       true,
             amplitude_scale: 1.0,
             low_gain:        1.0,
             mid_gain:        1.0,
