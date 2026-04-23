@@ -5,8 +5,8 @@ members = [
     "crates/ss-audio",
     "crates/ss-library",
     "crates/ss-api",
-    "crates/ss-app",
     "crates/ss-waveform",
+    "src-tauri",
 ]
 resolver = "2"
 

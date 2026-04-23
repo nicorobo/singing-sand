@@ -1,18 +1,13 @@
-use slint::{Rgb8Pixel, SharedPixelBuffer};
-
 use crate::render::render_to_pixels;
 use crate::settings::WaveformRenderSettings;
 use crate::types::{ViewPort, WaveformBucket};
 
 /// Stateful waveform renderer with cache invalidation.
-///
-/// Call `get_or_render` to get a pixel buffer — it re-renders only when data,
-/// settings, or viewport have changed since the last call.
 pub struct Renderer {
     settings: WaveformRenderSettings,
     data:     Vec<WaveformBucket>,
     viewport: ViewPort,
-    cached:   Option<SharedPixelBuffer<Rgb8Pixel>>,
+    cached:   Option<Vec<u8>>,
 }
 
 impl Renderer {
@@ -25,7 +20,6 @@ impl Renderer {
         }
     }
 
-    /// Update settings. Returns `true` if the cache was invalidated.
     pub fn set_settings(&mut self, s: WaveformRenderSettings) -> bool {
         if self.settings != s {
             self.settings = s;
@@ -48,12 +42,11 @@ impl Renderer {
         }
     }
 
-    /// Return the cached pixel buffer, rendering first if the cache is stale.
-    pub fn get_or_render(&mut self) -> &SharedPixelBuffer<Rgb8Pixel> {
+    pub fn get_or_render(&mut self) -> &[u8] {
         if self.cached.is_none() {
             self.cached = Some(render_to_pixels(&self.data, &self.settings, self.viewport));
         }
-        self.cached.as_ref().unwrap()
+        self.cached.as_deref().unwrap()
     }
 }
 

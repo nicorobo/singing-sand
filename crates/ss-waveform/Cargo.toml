@@ -4,11 +4,4 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-slint = { workspace = true }
-
-[dependencies.image]
-workspace = true
-optional = true
-
-[features]
-render-png = ["dep:image"]
+image = { workspace = true }

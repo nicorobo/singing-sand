@@ -22,3 +22,5 @@ target
 #.idea/
 singing-sand.db
 ideas.txt
+node_modules/
+dist/
