@@ -16,12 +16,37 @@ export struct SidebarEntry {
 export struct TagItem {
     id: int,
     name: string,
+    color: color,
+    text-dark: bool,    // true → use dark text (#1e1e2e) on this tag's background
     assigned: bool,
+    partial: bool,      // some (but not all) selected tracks have this tag
 }
 
 export struct ExpandedTagItem {
     id: int,
     name: string,
+    color: color,
+    text-dark: bool,
+}
+
+// Tag as displayed in the sidebar pill area
+export struct SidebarTagItem {
+    id: int,
+    name: string,
+    color: color,
+    color-hex: string,
+    text-dark: bool,
+}
+
+// One row of sidebar tag pills (pre-computed by Rust for wrapping layout)
+export struct SidebarTagRow {
+    items: [SidebarTagItem],
+}
+
+// A color option in the tag color picker palette
+export struct TagColorOption {
+    hex: string,
+    color: color,
 }
 
 export struct ExpandedPlaylistItem {

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use ss_db::Db;
-use ss_waveform::{ColorScheme, DisplayStyle, WaveformRenderSettings};
+use ss_waveform::{ColorScheme, DisplayStyle, NormalizeMode, WaveformRenderSettings};
 
 const KEY_AMPLITUDE_SCALE: &str = "waveform.amplitude_scale";
 const KEY_LOW_GAIN:        &str = "waveform.low_gain";
@@ -8,7 +8,10 @@ const KEY_MID_GAIN:        &str = "waveform.mid_gain";
 const KEY_HIGH_GAIN:       &str = "waveform.high_gain";
 const KEY_DISPLAY_STYLE:   &str = "waveform.display_style";
 const KEY_COLOR_SCHEME:    &str = "waveform.color_scheme";
-const KEY_NORMALIZE:       &str = "waveform.normalize";
+const KEY_NORMALIZE_MODE:  &str = "waveform.normalize_mode";
+const KEY_GAMMA:           &str = "waveform.gamma";
+const KEY_NOISE_FLOOR:     &str = "waveform.noise_floor";
+const KEY_SMOOTHING:       &str = "waveform.smoothing";
 
 pub struct AppSettings {
     pub waveform: WaveformRenderSettings,
@@ -41,9 +44,18 @@ pub async fn load_settings(db: &Db) -> Result<AppSettings> {
     let color_scheme = db.get_setting(KEY_COLOR_SCHEME).await?
         .and_then(|v| parse_color_scheme(&v))
         .unwrap_or(def.color_scheme);
-    let normalize = db.get_setting(KEY_NORMALIZE).await?
-        .and_then(|v| v.parse::<bool>().ok())
-        .unwrap_or(def.normalize);
+    let normalize_mode = db.get_setting(KEY_NORMALIZE_MODE).await?
+        .and_then(|v| parse_normalize_mode(&v))
+        .unwrap_or(def.normalize_mode);
+    let gamma = db.get_setting(KEY_GAMMA).await?
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(def.gamma);
+    let noise_floor = db.get_setting(KEY_NOISE_FLOOR).await?
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(def.noise_floor);
+    let smoothing = db.get_setting(KEY_SMOOTHING).await?
+        .and_then(|v| v.parse::<u8>().ok())
+        .unwrap_or(def.smoothing);
 
     Ok(AppSettings {
         waveform: WaveformRenderSettings {
@@ -53,7 +65,10 @@ pub async fn load_settings(db: &Db) -> Result<AppSettings> {
             high_gain,
             display_style,
             color_scheme,
-            normalize,
+            normalize_mode,
+            gamma,
+            noise_floor,
+            smoothing,
         },
     })
 }
@@ -66,7 +81,10 @@ pub async fn save_settings(db: &Db, s: &AppSettings) -> Result<()> {
     db.set_setting(KEY_HIGH_GAIN,       &w.high_gain.to_string()).await?;
     db.set_setting(KEY_DISPLAY_STYLE,   display_style_to_str(w.display_style)).await?;
     db.set_setting(KEY_COLOR_SCHEME,    color_scheme_to_str(w.color_scheme)).await?;
-    db.set_setting(KEY_NORMALIZE,       &w.normalize.to_string()).await?;
+    db.set_setting(KEY_NORMALIZE_MODE,  normalize_mode_to_str(w.normalize_mode)).await?;
+    db.set_setting(KEY_GAMMA,           &w.gamma.to_string()).await?;
+    db.set_setting(KEY_NOISE_FLOOR,     &w.noise_floor.to_string()).await?;
+    db.set_setting(KEY_SMOOTHING,       &w.smoothing.to_string()).await?;
     Ok(())
 }
 
@@ -82,6 +100,23 @@ fn display_style_to_str(s: DisplayStyle) -> &'static str {
     match s {
         DisplayStyle::Mirrored => "mirrored",
         DisplayStyle::TopHalf  => "tophalf",
+    }
+}
+
+fn parse_normalize_mode(s: &str) -> Option<NormalizeMode> {
+    match s {
+        "none"    => Some(NormalizeMode::None),
+        "perband" => Some(NormalizeMode::PerBand),
+        "global"  => Some(NormalizeMode::Global),
+        _ => None,
+    }
+}
+
+fn normalize_mode_to_str(m: NormalizeMode) -> &'static str {
+    match m {
+        NormalizeMode::None    => "none",
+        NormalizeMode::PerBand => "perband",
+        NormalizeMode::Global  => "global",
     }
 }
 

@@ -1,6 +1,6 @@
 use slint::{Rgb8Pixel, SharedPixelBuffer};
 
-use crate::settings::{ColorScheme, DisplayStyle, WaveformRenderSettings};
+use crate::settings::{ColorScheme, DisplayStyle, NormalizeMode, WaveformRenderSettings};
 use crate::types::{ViewPort, WaveformBucket};
 
 const BG: Rgb8Pixel = Rgb8Pixel { r: 24, g: 24, b: 37 };
@@ -36,35 +36,67 @@ pub fn render_to_pixels(
 
     // Apply normalization if requested.
     let normalized: Vec<WaveformBucket>;
-    let slice: &[WaveformBucket] = if settings.normalize {
-        let peak_low  = slice.iter().map(|b| b.low).fold(0.0_f32, f32::max);
-        let peak_mid  = slice.iter().map(|b| b.mid).fold(0.0_f32, f32::max);
-        let peak_high = slice.iter().map(|b| b.high).fold(0.0_f32, f32::max);
-        normalized = slice
-            .iter()
-            .map(|b| WaveformBucket {
-                low:  if peak_low  > 0.0 { b.low  / peak_low  } else { 0.0 },
-                mid:  if peak_mid  > 0.0 { b.mid  / peak_mid  } else { 0.0 },
-                high: if peak_high > 0.0 { b.high / peak_high } else { 0.0 },
-            })
-            .collect();
-        &normalized
-    } else {
-        slice
+    let slice: &[WaveformBucket] = match settings.normalize_mode {
+        NormalizeMode::None => slice,
+        NormalizeMode::PerBand => {
+            let peak_low  = slice.iter().map(|b| b.low).fold(0.0_f32, f32::max);
+            let peak_mid  = slice.iter().map(|b| b.mid).fold(0.0_f32, f32::max);
+            let peak_high = slice.iter().map(|b| b.high).fold(0.0_f32, f32::max);
+            normalized = slice
+                .iter()
+                .map(|b| WaveformBucket {
+                    low:  if peak_low  > 0.0 { b.low  / peak_low  } else { 0.0 },
+                    mid:  if peak_mid  > 0.0 { b.mid  / peak_mid  } else { 0.0 },
+                    high: if peak_high > 0.0 { b.high / peak_high } else { 0.0 },
+                })
+                .collect();
+            &normalized
+        }
+        NormalizeMode::Global => {
+            let peak = slice
+                .iter()
+                .flat_map(|b| [b.low, b.mid, b.high])
+                .fold(0.0_f32, f32::max);
+            normalized = slice
+                .iter()
+                .map(|b| WaveformBucket {
+                    low:  if peak > 0.0 { b.low  / peak } else { 0.0 },
+                    mid:  if peak > 0.0 { b.mid  / peak } else { 0.0 },
+                    high: if peak > 0.0 { b.high / peak } else { 0.0 },
+                })
+                .collect();
+            &normalized
+        }
     };
 
     let slice_len = slice.len();
 
     for x in 0..w {
         let bucket = (x * slice_len) / w;
-        let b = slice.get(bucket).copied().unwrap_or_default();
+        let b = if settings.smoothing <= 1 {
+            slice.get(bucket).copied().unwrap_or_default()
+        } else {
+            let half = settings.smoothing as usize / 2;
+            let lo = bucket.saturating_sub(half);
+            let hi = (bucket + half).min(slice_len - 1);
+            let count = (hi - lo + 1) as f32;
+            let sum = slice[lo..=hi].iter().fold(WaveformBucket::default(), |acc, b| WaveformBucket {
+                low:  acc.low  + b.low,
+                mid:  acc.mid  + b.mid,
+                high: acc.high + b.high,
+            });
+            WaveformBucket { low: sum.low / count, mid: sum.mid / count, high: sum.high / count }
+        };
 
-        let low  = (b.low  * settings.low_gain  * settings.amplitude_scale).clamp(0.0, 1.0);
-        let mid  = (b.mid  * settings.mid_gain  * settings.amplitude_scale).clamp(0.0, 1.0);
-        let high = (b.high * settings.high_gain * settings.amplitude_scale).clamp(0.0, 1.0);
+        // Per-band gain only — these values drive COLOR (amplitude_scale must not affect hue).
+        let low  = (b.low  * settings.low_gain).clamp(0.0, 1.0);
+        let mid  = (b.mid  * settings.mid_gain).clamp(0.0, 1.0);
+        let high = (b.high * settings.high_gain).clamp(0.0, 1.0);
 
-        let amplitude = ((low + mid + high) / 3.0).clamp(0.0, 1.0);
-        if amplitude == 0.0 {
+        // Bar HEIGHT: peak of bands → gamma curve → global amplitude scale.
+        let peak = low.max(mid).max(high);
+        let amplitude = (peak.powf(settings.gamma) * settings.amplitude_scale).clamp(0.0, 1.0);
+        if amplitude <= settings.noise_floor {
             continue;
         }
 
@@ -115,7 +147,12 @@ fn pick_color(
                 b: (low * 135.0 + mid * 250.0 + high * 247.0).min(255.0) as u8,
             }
         }
-        ColorScheme::Monochrome | ColorScheme::Grayscale => {
+        ColorScheme::Monochrome => {
+            // Blue intensity scaled by amplitude.
+            let v = (amplitude * 255.0) as u8;
+            Rgb8Pixel { r: (v as f32 * 0.54) as u8, g: (v as f32 * 0.71) as u8, b: v }
+        }
+        ColorScheme::Grayscale => {
             let v = (amplitude * 255.0) as u8;
             Rgb8Pixel { r: v, g: v, b: v }
         }

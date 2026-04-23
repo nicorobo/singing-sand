@@ -17,6 +17,17 @@ pub enum ColorScheme {
     Grayscale,
 }
 
+/// How amplitude values are normalized before rendering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NormalizeMode {
+    /// No normalization — use raw RMS values.
+    None,
+    /// Normalize each band independently to its own peak.
+    PerBand,
+    /// Normalize all bands to the global peak, preserving relative energy balance.
+    Global,
+}
+
 /// All visual parameters for waveform rendering.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WaveformRenderSettings {
@@ -27,8 +38,14 @@ pub struct WaveformRenderSettings {
     pub high_gain:       f32,
     pub display_style:   DisplayStyle,
     pub color_scheme:    ColorScheme,
-    /// Normalize each track to its own peak amplitude before rendering.
-    pub normalize:       bool,
+    pub normalize_mode:  NormalizeMode,
+    /// Power-curve exponent for bar height. <1.0 lifts quiet detail; >1.0 crushes it.
+    /// Default 0.6 gives moderate dynamic compression.
+    pub gamma:           f32,
+    /// Amplitude threshold below which bars are hidden (noise gate). 0.0 = off.
+    pub noise_floor:     f32,
+    /// Number of adjacent buckets to average per column. 1 = no smoothing.
+    pub smoothing:       u8,
 }
 
 impl Default for WaveformRenderSettings {
@@ -40,7 +57,10 @@ impl Default for WaveformRenderSettings {
             high_gain:       1.0,
             display_style:   DisplayStyle::Mirrored,
             color_scheme:    ColorScheme::AdditivePeachBlueLavender,
-            normalize:       false,
+            normalize_mode:  NormalizeMode::None,
+            gamma:           0.6,
+            noise_floor:     0.0,
+            smoothing:       1,
         }
     }
 }

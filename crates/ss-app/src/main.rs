@@ -19,6 +19,123 @@ use settings::{load_settings, save_settings, AppSettings};
 
 slint::include_modules!();
 
+// ── Tag color palette ────────────────────────────────────────────────────────
+
+const TAG_COLORS: &[&str] = &[
+    "#89b4fa", // blue (default)
+    "#f38ba8", // red
+    "#fab387", // peach
+    "#f9e2af", // yellow
+    "#a6e3a1", // green
+    "#b4befe", // lavender
+    "#cba6f7", // mauve
+    "#f5c2e7", // pink
+];
+
+/// Returns `true` if dark text (`#1e1e2e`) should be used on this hex background.
+fn text_is_dark(hex: &str) -> bool {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() < 6 {
+        return false;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(128) as f32;
+    let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(128) as f32;
+    let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(128) as f32;
+    (0.299 * r + 0.587 * g + 0.114 * b) > 128.0
+}
+
+/// Parse a `#rrggbb` hex string into a Slint `Color`.
+fn hex_to_slint_color(hex: &str) -> slint::Color {
+    let hex = hex.trim_start_matches('#');
+    let r = u8::from_str_radix(&hex.get(0..2).unwrap_or("89"), 16).unwrap_or(0x89);
+    let g = u8::from_str_radix(&hex.get(2..4).unwrap_or("b4"), 16).unwrap_or(0xb4);
+    let b = u8::from_str_radix(&hex.get(4..6).unwrap_or("fa"), 16).unwrap_or(0xfa);
+    slint::Color::from_rgb_u8(r, g, b)
+}
+
+/// Build the palette of color options passed to the UI.
+fn make_tag_color_palette() -> Vec<TagColorOption> {
+    TAG_COLORS
+        .iter()
+        .map(|hex| TagColorOption { hex: (*hex).into(), color: hex_to_slint_color(hex) })
+        .collect()
+}
+
+/// Convert a flat list of `Tag`s to sidebar rows with a wrapping layout.
+/// Pill width is estimated as ~7px/char + 20px padding; available width ~172px.
+/// Returns `Vec<Vec<SidebarTagItem>>` (Send-safe) — callers convert to
+/// `Vec<SidebarTagRow>` on the Slint thread inside `invoke_from_event_loop`.
+fn compute_sidebar_tag_rows(tags: &[ss_db::Tag]) -> Vec<Vec<SidebarTagItem>> {
+    const AVAILABLE: f32 = 172.0;
+    const SPACING: f32 = 6.0;
+    let pill_w = |name: &str| name.len() as f32 * 7.0 + 20.0;
+
+    let mut rows: Vec<Vec<SidebarTagItem>> = Vec::new();
+    let mut row: Vec<SidebarTagItem> = Vec::new();
+    let mut used = 0.0f32;
+
+    for tag in tags {
+        let w = pill_w(&tag.name);
+        let needed = if row.is_empty() { w } else { SPACING + w };
+        if !row.is_empty() && used + needed > AVAILABLE {
+            rows.push(row);
+            row = Vec::new();
+            used = 0.0;
+        }
+        used += if row.is_empty() { w } else { SPACING + w };
+        row.push(SidebarTagItem {
+            id: tag.id as i32,
+            name: tag.name.clone().into(),
+            color: hex_to_slint_color(&tag.color),
+            color_hex: tag.color.clone().into(),
+            text_dark: text_is_dark(&tag.color),
+        });
+    }
+    if !row.is_empty() {
+        rows.push(row);
+    }
+    rows
+}
+
+/// Convert `Vec<Vec<SidebarTagItem>>` (from `compute_sidebar_tag_rows`) to
+/// `ModelRc<SidebarTagRow>`. Must be called on the Slint thread.
+fn sidebar_rows_to_model(rows: Vec<Vec<SidebarTagItem>>) -> slint::ModelRc<SidebarTagRow> {
+    let slint_rows: Vec<SidebarTagRow> = rows
+        .into_iter()
+        .map(|items| SidebarTagRow {
+            items: slint::ModelRc::new(slint::VecModel::from(items)),
+        })
+        .collect();
+    slint::ModelRc::new(slint::VecModel::from(slint_rows))
+}
+
+/// Build a `TagItem` list for the selection-based tag assignment panel.
+/// `track_tags` is `(track_id, Tag)` pairs from `list_tags_for_tracks`.
+fn build_selected_tags(
+    all_tags: &[ss_db::Tag],
+    sel_ids: &HashSet<i64>,
+    track_tags: &[(i64, ss_db::Tag)],
+) -> Vec<TagItem> {
+    let total = sel_ids.len();
+    all_tags
+        .iter()
+        .map(|tag| {
+            let count = track_tags
+                .iter()
+                .filter(|(tid, t)| sel_ids.contains(tid) && t.id == tag.id)
+                .count();
+            TagItem {
+                id: tag.id as i32,
+                name: tag.name.clone().into(),
+                color: hex_to_slint_color(&tag.color),
+                text_dark: text_is_dark(&tag.color),
+                assigned: count == total && total > 0,
+                partial: count > 0 && count < total,
+            }
+        })
+        .collect()
+}
+
 fn init_tracing() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -190,19 +307,6 @@ async fn start_playback(
     let now_title: slint::SharedString = track.title.clone().unwrap_or_default().into();
     let now_artist: slint::SharedString = track.artist.clone().unwrap_or_default().into();
 
-    // Load tag chips.
-    let all_tags = db.list_tags().await.unwrap_or_default();
-    let assigned = db.list_tags_for_track(track_id).await.unwrap_or_default();
-    let assigned_ids: std::collections::HashSet<i64> = assigned.iter().map(|t| t.id).collect();
-    let tag_items: Vec<TagItem> = all_tags
-        .iter()
-        .map(|t| TagItem {
-            id: t.id as i32,
-            name: t.name.clone().into(),
-            assigned: assigned_ids.contains(&t.id),
-        })
-        .collect();
-
     // Decode now-playing art to a pixel buffer (Send).
     let now_art_buf = match db.get_album_art(track_id).await.unwrap_or(None) {
         Some(bytes) => {
@@ -215,7 +319,6 @@ async fn start_playback(
     };
 
     // Push immediate state to UI (create Image on Slint thread).
-    let tag_items_clone = tag_items.clone();
     let now_title_clone = now_title.clone();
     let now_artist_clone = now_artist.clone();
     let weak2 = weak.clone();
@@ -226,7 +329,6 @@ async fn start_playback(
                 .unwrap_or_default();
             w.set_duration(duration);
             w.set_position(0.0);
-            w.set_current_track_tags(slint::ModelRc::new(slint::VecModel::from(tag_items_clone)));
             w.set_now_playing_art(now_art);
             w.set_now_playing_title(now_title_clone);
             w.set_now_playing_artist(now_artist_clone);
@@ -260,7 +362,7 @@ async fn start_playback(
 
     let settings_snap = render_settings.lock().unwrap().clone();
     let pixel_buf = render_to_pixels(&buckets, &settings_snap, ViewPort::default());
-    let preview_vp = ViewPort { width: 288, height: 60, start_pct: 0.0, end_pct: 1.0 };
+    let preview_vp = ViewPort { width: 640, height: 120, start_pct: 0.0, end_pct: 1.0 };
     let preview_buf = render_to_pixels(&buckets, &settings_snap, preview_vp);
 
     let _ = slint::invoke_from_event_loop(move || {
@@ -604,6 +706,22 @@ fn int_to_color_scheme(v: i32) -> ss_waveform::ColorScheme {
     }
 }
 
+fn normalize_mode_to_int(m: ss_waveform::NormalizeMode) -> i32 {
+    match m {
+        ss_waveform::NormalizeMode::None    => 0,
+        ss_waveform::NormalizeMode::PerBand => 1,
+        ss_waveform::NormalizeMode::Global  => 2,
+    }
+}
+
+fn int_to_normalize_mode(v: i32) -> ss_waveform::NormalizeMode {
+    match v {
+        1 => ss_waveform::NormalizeMode::PerBand,
+        2 => ss_waveform::NormalizeMode::Global,
+        _ => ss_waveform::NormalizeMode::None,
+    }
+}
+
 /// Re-render the waveform with current settings and push it to the UI.
 fn rerender_waveform(
     render_settings: &Arc<Mutex<WaveformRenderSettings>>,
@@ -635,7 +753,8 @@ fn rerender_settings_preview(
         return;
     }
     let s = render_settings.lock().unwrap().clone();
-    let vp = ViewPort { width: 288, height: 60, start_pct: 0.0, end_pct: 1.0 };
+    // Render at 2× logical pixels so Slint downsamples on Retina displays instead of upsampling.
+    let vp = ViewPort { width: 640, height: 120, start_pct: 0.0, end_pct: 1.0 };
     let buf = render_to_pixels(&bands, &s, vp);
     let sw = sw.clone();
     let _ = slint::invoke_from_event_loop(move || {
@@ -672,7 +791,10 @@ fn cmd_gui() -> Result<()> {
         settings_win.set_high_gain(w.high_gain);
         settings_win.set_display_style(display_style_to_int(w.display_style));
         settings_win.set_color_scheme(color_scheme_to_int(w.color_scheme));
-        settings_win.set_normalize(w.normalize);
+        settings_win.set_normalize_mode(normalize_mode_to_int(w.normalize_mode));
+        settings_win.set_gamma(w.gamma);
+        settings_win.set_noise_floor(w.noise_floor);
+        settings_win.set_smoothing(w.smoothing as f32);
     }
     let settings_win = Arc::new(settings_win);
     let settings_win_weak = settings_win.as_weak();
@@ -710,11 +832,10 @@ fn cmd_gui() -> Result<()> {
     window.set_sidebar_playlists(slint::ModelRc::new(slint::VecModel::from(pl_entries)));
 
     let tags = rt.block_on(db.list_tags())?;
-    let tag_entries: Vec<SidebarEntry> = tags
-        .iter()
-        .map(|t| SidebarEntry { id: t.id as i32, label: t.name.clone().into() })
-        .collect();
-    window.set_sidebar_tags(slint::ModelRc::new(slint::VecModel::from(tag_entries)));
+    window.set_sidebar_tag_rows(sidebar_rows_to_model(compute_sidebar_tag_rows(&tags)));
+    window.set_tag_color_palette(slint::ModelRc::new(slint::VecModel::from(
+        make_tag_color_palette(),
+    )));
 
     info!(
         "loaded {} tracks, {} dirs, {} playlists, {} tags",
@@ -825,17 +946,10 @@ fn cmd_gui() -> Result<()> {
                     return;
                 }
 
-                // Scan + record in DB
-                let scanner = Scanner::new(Arc::clone(&db));
-                match scanner.scan_dir(&path).await {
-                    Ok(stats) => {
-                        info!(
-                            "added dir {path_str} — {} upserted, {} errors",
-                            stats.upserted, stats.errors
-                        );
-                        aq.enqueue(stats.upserted_tracks);
-                    }
-                    Err(e) => tracing::warn!("scan_dir failed for {path_str}: {e}"),
+                // Register the directory immediately so it appears in the
+                // sidebar without waiting for the scan to complete.
+                if let Err(e) = db.record_scanned_dir(&path).await {
+                    tracing::warn!("record_scanned_dir failed for {path_str}: {e}");
                 }
 
                 // Start watching the new directory
@@ -845,16 +959,36 @@ fn cmd_gui() -> Result<()> {
                     }
                 }
 
-                // Refresh the sidebar tree and trigger a nav reload
+                // Refresh the sidebar tree immediately.
                 refresh_dir_tree(&db, &weak, &expanded).await;
-                let _ = slint::invoke_from_event_loop({
-                    let weak = weak.clone();
-                    move || {
-                        let Some(w) = weak.upgrade() else { return };
-                        if w.get_nav_kind() == 0 {
-                            w.invoke_nav_all();
+
+                // Run the full scan in the background; track list + tree
+                // refresh again once it finishes.
+                let db2 = Arc::clone(&db);
+                let weak2 = weak.clone();
+                let expanded2 = Arc::clone(&expanded);
+                tokio::spawn(async move {
+                    let scanner = Scanner::new(Arc::clone(&db2));
+                    match scanner.scan_dir(&path).await {
+                        Ok(stats) => {
+                            info!(
+                                "added dir {path_str} — {} upserted, {} errors",
+                                stats.upserted, stats.errors
+                            );
+                            aq.enqueue(stats.upserted_tracks);
                         }
+                        Err(e) => tracing::warn!("scan_dir failed for {path_str}: {e}"),
                     }
+                    refresh_dir_tree(&db2, &weak2, &expanded2).await;
+                    let _ = slint::invoke_from_event_loop({
+                        let weak2 = weak2.clone();
+                        move || {
+                            let Some(w) = weak2.upgrade() else { return };
+                            if w.get_nav_kind() == 0 {
+                                w.invoke_nav_all();
+                            }
+                        }
+                    });
                 });
             });
         });
@@ -1180,23 +1314,77 @@ fn cmd_gui() -> Result<()> {
         let db = Arc::clone(&db);
         let weak = window.as_weak();
         let rt_handle = rt_handle.clone();
-        window.on_create_tag(move |name| {
+        window.on_create_tag(move |name, color| {
             let db = Arc::clone(&db);
             let weak = weak.clone();
             let name_str = name.to_string();
+            let color_str = color.to_string();
             rt_handle.spawn(async move {
-                if let Err(e) = db.insert_tag(&name_str).await {
+                if let Err(e) = db.insert_tag(&name_str, &color_str).await {
                     tracing::warn!("create_tag failed: {e}");
                     return;
                 }
                 let tags = db.list_tags().await.unwrap_or_default();
-                let entries: Vec<SidebarEntry> = tags
-                    .iter()
-                    .map(|t| SidebarEntry { id: t.id as i32, label: t.name.clone().into() })
-                    .collect();
+                let rows = compute_sidebar_tag_rows(&tags);
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(w) = weak.upgrade() {
-                        w.set_sidebar_tags(slint::ModelRc::new(slint::VecModel::from(entries)));
+                        w.set_sidebar_tag_rows(sidebar_rows_to_model(rows));
+                    }
+                });
+            });
+        });
+    }
+
+    {
+        let db = Arc::clone(&db);
+        let weak = window.as_weak();
+        let rt_handle = rt_handle.clone();
+        window.on_delete_tag(move |tag_id| {
+            let db = Arc::clone(&db);
+            let weak = weak.clone();
+            rt_handle.spawn(async move {
+                if let Err(e) = db.delete_tag(tag_id as i64).await {
+                    tracing::warn!("delete_tag failed: {e}");
+                    return;
+                }
+                let tags = db.list_tags().await.unwrap_or_default();
+                let rows = compute_sidebar_tag_rows(&tags);
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(w) = weak.upgrade() {
+                        w.set_sidebar_tag_rows(sidebar_rows_to_model(rows));
+                        if w.get_nav_kind() == 3 && w.get_nav_id() == tag_id {
+                            w.set_nav_kind(0);
+                            w.set_nav_id(-1);
+                            w.invoke_nav_all();
+                        }
+                    }
+                });
+            });
+        });
+    }
+
+    {
+        let db = Arc::clone(&db);
+        let weak = window.as_weak();
+        let rt_handle = rt_handle.clone();
+        window.on_update_tag(move |tag_id, name, color| {
+            let db = Arc::clone(&db);
+            let weak = weak.clone();
+            let name_str = name.to_string();
+            let color_str = color.to_string();
+            rt_handle.spawn(async move {
+                if let Err(e) = db.update_tag(tag_id as i64, &name_str, &color_str).await {
+                    tracing::warn!("update_tag failed: {e}");
+                    return;
+                }
+                let tags = db.list_tags().await.unwrap_or_default();
+                let rows = compute_sidebar_tag_rows(&tags);
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(w) = weak.upgrade() {
+                        w.set_sidebar_tag_rows(sidebar_rows_to_model(rows));
+                        if w.get_nav_kind() == 3 && w.get_nav_id() == tag_id {
+                            w.invoke_nav_tag(tag_id);
+                        }
                     }
                 });
             });
@@ -1206,7 +1394,9 @@ fn cmd_gui() -> Result<()> {
     // ── Multiselect ──────────────────────────────────────────────────────────
 
     {
+        let db = Arc::clone(&db);
         let weak = window.as_weak();
+        let rt_handle = rt_handle.clone();
         let selection = Arc::clone(&selection);
         let last_selected_id = Arc::clone(&last_selected_id);
         window.on_track_clicked(move |id, shift, meta| {
@@ -1262,6 +1452,25 @@ fn cmd_gui() -> Result<()> {
                 }
             }
             w.set_drag_count(count);
+            w.set_selected_track_count(count);
+
+            // Refresh tag assignment panel for the new selection
+            let db = Arc::clone(&db);
+            let weak = weak.clone();
+            let sel_ids: Vec<i64> = new_sel.iter().copied().collect();
+            rt_handle.spawn(async move {
+                let all_tags = db.list_tags().await.unwrap_or_default();
+                let track_tags = db.list_tags_for_tracks(&sel_ids).await.unwrap_or_default();
+                let sel_set: HashSet<i64> = sel_ids.iter().copied().collect();
+                let tag_items = build_selected_tags(&all_tags, &sel_set, &track_tags);
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(w) = weak.upgrade() {
+                        w.set_selected_tags(slint::ModelRc::new(slint::VecModel::from(
+                            tag_items,
+                        )));
+                    }
+                });
+            });
         });
     }
 
@@ -1351,61 +1560,120 @@ fn cmd_gui() -> Result<()> {
         });
     }
 
-    // ── Tag toggle ───────────────────────────────────────────────────────────
+    // ── Reorder playlist tracks ──────────────────────────────────────────────
 
     {
         let db = Arc::clone(&db);
         let weak = window.as_weak();
         let rt_handle = rt_handle.clone();
-        window.on_toggle_tag(move |tag_id, should_assign| {
+        let selection = Arc::clone(&selection);
+        window.on_reorder_playlist_tracks(move |playlist_id, drop_index, drag_track_id| {
+            let drop_index = drop_index as usize;
+            let Some(w) = weak.upgrade() else { return };
+
+            // Snapshot current model order and selection from the Slint thread.
+            let model = w.get_tracks();
+            let sel = selection.lock().unwrap().clone();
+
+            let current_ids: Vec<i64> = (0..model.row_count())
+                .filter_map(|i| model.row_data(i).map(|r| r.id as i64))
+                .collect();
+
+            let drag_id = drag_track_id as i64;
+            let dragged_ids: Vec<i64> = if sel.contains(&drag_id) {
+                // Multi-select: move all selected tracks as a block in their current order.
+                current_ids.iter().filter(|&&id| sel.contains(&id)).copied().collect()
+            } else {
+                // Single unselected track drag.
+                vec![drag_id]
+            };
+
+            let remaining_ids: Vec<i64> = current_ids
+                .iter()
+                .filter(|&&id| !dragged_ids.contains(&id))
+                .copied()
+                .collect();
+
+            // Convert visual drop_index (gap in full model) to insert position in remaining list.
+            let insert_at = current_ids[..drop_index.min(current_ids.len())]
+                .iter()
+                .filter(|&&id| !dragged_ids.contains(&id))
+                .count();
+
+            let mut new_order = Vec::with_capacity(current_ids.len());
+            new_order.extend_from_slice(&remaining_ids[..insert_at]);
+            new_order.extend_from_slice(&dragged_ids);
+            new_order.extend_from_slice(&remaining_ids[insert_at..]);
+
             let db = Arc::clone(&db);
             let weak = weak.clone();
             rt_handle.spawn(async move {
-                let track_id = {
+                if let Err(e) =
+                    db.reorder_playlist_tracks(playlist_id as i64, &new_order).await
+                {
+                    tracing::warn!("reorder_playlist_tracks failed: {e}");
+                    return;
+                }
+                let _ = slint::invoke_from_event_loop(move || {
                     if let Some(w) = weak.upgrade() {
-                        w.get_current_track_id() as i64
-                    } else {
-                        return;
+                        w.invoke_nav_playlist(playlist_id);
                     }
-                };
-                if track_id < 0 {
-                    return;
-                }
-                let result = if should_assign {
-                    db.assign_tag(track_id, tag_id as i64).await
-                } else {
-                    db.unassign_tag(track_id, tag_id as i64).await.map(|_| ())
-                };
-                if let Err(e) = result {
-                    tracing::warn!("toggle_tag failed: {e}");
-                    return;
-                }
-                let all_tags = db.list_tags().await.unwrap_or_default();
-                let assigned = db.list_tags_for_track(track_id).await.unwrap_or_default();
-                let assigned_ids: std::collections::HashSet<i64> =
-                    assigned.iter().map(|t| t.id).collect();
-                let tag_items: Vec<TagItem> = all_tags
+                });
+            });
+        });
+    }
+
+    // ── Tag toggle (for selected tracks) ────────────────────────────────────
+
+    {
+        let db = Arc::clone(&db);
+        let weak = window.as_weak();
+        let rt_handle = rt_handle.clone();
+        let selection = Arc::clone(&selection);
+        window.on_toggle_tag_for_selection(move |tag_id| {
+            let db = Arc::clone(&db);
+            let weak = weak.clone();
+            let sel_ids: Vec<i64> = selection.lock().unwrap().iter().copied().collect();
+            if sel_ids.is_empty() {
+                return;
+            }
+            rt_handle.spawn(async move {
+                // Determine which selected tracks already have this tag
+                let track_tags =
+                    db.list_tags_for_tracks(&sel_ids).await.unwrap_or_default();
+                let tracks_with_tag: HashSet<i64> = track_tags
                     .iter()
-                    .map(|t| TagItem {
-                        id: t.id as i32,
-                        name: t.name.clone().into(),
-                        assigned: assigned_ids.contains(&t.id),
-                    })
+                    .filter(|(_, t)| t.id == tag_id as i64)
+                    .map(|(tid, _)| *tid)
                     .collect();
+
+                let all_have_it = tracks_with_tag.len() == sel_ids.len();
+                for &track_id in &sel_ids {
+                    if all_have_it {
+                        db.unassign_tag(track_id, tag_id as i64).await.ok();
+                    } else if !tracks_with_tag.contains(&track_id) {
+                        db.assign_tag(track_id, tag_id as i64).await.ok();
+                    }
+                }
+
+                // Refresh selected-tags UI state
+                let all_tags = db.list_tags().await.unwrap_or_default();
+                let updated_track_tags =
+                    db.list_tags_for_tracks(&sel_ids).await.unwrap_or_default();
+                let sel_set: HashSet<i64> = sel_ids.iter().copied().collect();
+                let tag_items = build_selected_tags(&all_tags, &sel_set, &updated_track_tags);
+
                 let nav_kind = weak.upgrade().map(|w| w.get_nav_kind()).unwrap_or(0);
                 let nav_tag_id = weak.upgrade().map(|w| w.get_nav_id()).unwrap_or(-1);
                 let tracks_opt = if nav_kind == 3 {
-                    Some(
-                        db.list_tracks_with_tag(nav_tag_id as i64)
-                            .await
-                            .unwrap_or_default(),
-                    )
+                    Some(db.list_tracks_with_tag(nav_tag_id as i64).await.unwrap_or_default())
                 } else {
                     None
                 };
+
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(w) = weak.upgrade() {
-                        w.set_current_track_tags(slint::ModelRc::new(slint::VecModel::from(
+                        w.set_selected_tags(slint::ModelRc::new(slint::VecModel::from(
                             tag_items,
                         )));
                         if let Some(ref tracks) = tracks_opt {
@@ -1438,7 +1706,12 @@ fn cmd_gui() -> Result<()> {
                 let tag_items: Vec<ExpandedTagItem> = tags_res
                     .unwrap_or_default()
                     .iter()
-                    .map(|t| ExpandedTagItem { id: t.id as i32, name: t.name.clone().into() })
+                    .map(|t| ExpandedTagItem {
+                        id: t.id as i32,
+                        name: t.name.clone().into(),
+                        color: hex_to_slint_color(&t.color),
+                        text_dark: text_is_dark(&t.color),
+                    })
                     .collect();
 
                 let pl_items: Vec<ExpandedPlaylistItem> = playlists_res
@@ -1505,7 +1778,12 @@ fn cmd_gui() -> Result<()> {
                 let tags = db.list_tags_for_track(track_id).await.unwrap_or_default();
                 let tag_items: Vec<ExpandedTagItem> = tags
                     .iter()
-                    .map(|t| ExpandedTagItem { id: t.id as i32, name: t.name.clone().into() })
+                    .map(|t| ExpandedTagItem {
+                        id: t.id as i32,
+                        name: t.name.clone().into(),
+                        color: hex_to_slint_color(&t.color),
+                        text_dark: text_is_dark(&t.color),
+                    })
                     .collect();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(w) = weak.upgrade() {
@@ -1709,10 +1987,16 @@ fn cmd_gui() -> Result<()> {
     settings_cb!(on_low_gain_changed,        low_gain,        f32, |v| v);
     settings_cb!(on_mid_gain_changed,        mid_gain,        f32, |v| v);
     settings_cb!(on_high_gain_changed,       high_gain,       f32, |v| v);
+    settings_cb!(on_gamma_changed,           gamma,           f32, |v| v);
+    settings_cb!(on_noise_floor_changed,     noise_floor,     f32, |v| v);
+    settings_cb!(on_smoothing_changed,       smoothing,       u8,  |v: f32| v.round() as u8);
     save_cb!(on_amplitude_scale_released);
     save_cb!(on_low_gain_released);
     save_cb!(on_mid_gain_released);
     save_cb!(on_high_gain_released);
+    save_cb!(on_gamma_released);
+    save_cb!(on_noise_floor_released);
+    save_cb!(on_smoothing_released);
 
     // ComboBox/CheckBox: single callback, render + save immediately
     macro_rules! instant_cb {
@@ -1736,9 +2020,9 @@ fn cmd_gui() -> Result<()> {
             });
         }};
     }
-    instant_cb!(on_display_style_changed, display_style, ss_waveform::DisplayStyle, |v: i32| int_to_display_style(v));
-    instant_cb!(on_color_scheme_changed,  color_scheme,  ss_waveform::ColorScheme,  |v: i32| int_to_color_scheme(v));
-    instant_cb!(on_normalize_changed,     normalize,     bool, |v| v);
+    instant_cb!(on_display_style_changed,  display_style,   ss_waveform::DisplayStyle,   |v: i32| int_to_display_style(v));
+    instant_cb!(on_color_scheme_changed,   color_scheme,    ss_waveform::ColorScheme,    |v: i32| int_to_color_scheme(v));
+    instant_cb!(on_normalize_mode_changed, normalize_mode,  ss_waveform::NormalizeMode,  |v: i32| int_to_normalize_mode(v));
 
     // ── Audio event forwarding ───────────────────────────────────────────────
 

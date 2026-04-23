@@ -2,10 +2,10 @@ import { SettingsWindow } from "settings.slint";
 import { Sidebar } from "sidebar.slint";
 import { TrackList } from "track-list.slint";
 import { PlayerPanel } from "player-panel.slint";
-import { TrackItem, SidebarEntry, TagItem, ExpandedTagItem, ExpandedPlaylistItem, DirTreeItem } from "types.slint";
+import { TrackItem, SidebarEntry, TagItem, ExpandedTagItem, ExpandedPlaylistItem, DirTreeItem, SidebarTagRow, TagColorOption } from "types.slint";
 
 export { SettingsWindow }
-export { TrackItem, SidebarEntry, TagItem, ExpandedTagItem, ExpandedPlaylistItem, DirTreeItem } from "types.slint";
+export { TrackItem, SidebarEntry, TagItem, ExpandedTagItem, ExpandedPlaylistItem, DirTreeItem, SidebarTagRow, TagColorOption } from "types.slint";
 
 export component AppWindow inherits Window {
     title: "Singing Sand";
@@ -30,7 +30,8 @@ export component AppWindow inherits Window {
     // Sidebar data
     in property <[DirTreeItem]>   dir-tree-items;
     in property <[SidebarEntry]>  sidebar-playlists;
-    in property <[SidebarEntry]>  sidebar-tags;
+    in property <[SidebarTagRow]> sidebar-tag-rows;
+    in property <[TagColorOption]> tag-color-palette;
 
     // Directory management
     in-out property <bool>   show-dir-duplicate-dialog: false;
@@ -41,8 +42,9 @@ export component AppWindow inherits Window {
     in-out property <int>    nav-id: -1;
     in-out property <string> nav-dir: "";
 
-    // Tag chips for the currently selected track
-    in property <[TagItem]> current-track-tags;
+    // Tag assignment panel (shown when tracks are selected)
+    in property <int>       selected-track-count: 0;
+    in property <[TagItem]> selected-tags;
 
     // Inline creation state
     in-out property <bool> creating-playlist: false;
@@ -79,10 +81,12 @@ export component AppWindow inherits Window {
 
     // Sidebar management
     callback create-playlist(string);
-    callback create-tag(string);
+    callback create-tag(string, string);   // name, color hex
+    callback delete-tag(int);
+    callback update-tag(int, string, string);   // id, name, color hex
 
-    // Tag assignment for current track
-    callback toggle-tag(int, bool);
+    // Tag assignment for selected tracks
+    callback toggle-tag-for-selection(int);  // tag id; Rust handles normalize-then-toggle
 
     // Expanded track row
     in-out property <int>  expanded-track-id: -1;
@@ -98,6 +102,7 @@ export component AppWindow inherits Window {
     // Playlist track management
     callback add-to-playlist(int, int);
     callback remove-from-playlist(int, int);
+    callback reorder-playlist-tracks(int, int, int); // playlist-id, drop-index, drag-track-id
 
     // Multiselect
     callback track-clicked(int, bool, bool);
@@ -116,7 +121,8 @@ export component AppWindow inherits Window {
         Sidebar {
             dir-tree-items:    root.dir-tree-items;
             sidebar-playlists: root.sidebar-playlists;
-            sidebar-tags:      root.sidebar-tags;
+            sidebar-tag-rows:  root.sidebar-tag-rows;
+            tag-color-palette: root.tag-color-palette;
             drag-track-id:     root.drag-track-id;
             drag-x:            root.drag-x;
             drag-y:            root.drag-y;
@@ -135,9 +141,11 @@ export component AppWindow inherits Window {
             add-directory-clicked => { root.add-directory-clicked(); }
             toggle-dir-expanded(p) => { root.toggle-dir-expanded(p); }
             remove-scanned-dir(p)  => { root.remove-scanned-dir(p); }
-            create-playlist(n)  => { root.create-playlist(n); }
-            create-tag(n)       => { root.create-tag(n); }
-            settings-clicked    => { root.settings-clicked(); }
+            create-playlist(n)   => { root.create-playlist(n); }
+            create-tag(n, c)     => { root.create-tag(n, c); }
+            delete-tag(id)       => { root.delete-tag(id); }
+            update-tag(id, n, c) => { root.update-tag(id, n, c); }
+            settings-clicked     => { root.settings-clicked(); }
         }
 
         // Sidebar divider
@@ -152,7 +160,6 @@ export component AppWindow inherits Window {
 
             TrackList {
                 tracks:                          root.tracks;
-                current-track-tags:              root.current-track-tags;
                 expanded-track-tags:             root.expanded-track-tags;
                 expanded-track-playlists:        root.expanded-track-playlists;
                 expanded-track-notes:            root.expanded-track-notes;
@@ -176,17 +183,69 @@ export component AppWindow inherits Window {
                 expand-track(id)          => { root.expand-track(id); }
                 remove-tag-from-expanded(id) => { root.remove-tag-from-expanded(id); }
                 save-notes(id, text)      => { root.save-notes(id, text); }
-                toggle-tag(id, v)         => { root.toggle-tag(id, v); }
                 add-to-playlist(pl, tr)   => { root.add-to-playlist(pl, tr); }
                 remove-from-playlist(pl, tr) => { root.remove-from-playlist(pl, tr); }
                 nav-tag(id)               => { root.nav-tag(id); }
                 nav-playlist(id)          => { root.nav-playlist(id); }
                 track-clicked(id, sh, me) => { root.track-clicked(id, sh, me); }
                 add-selected-to-playlist(pl) => { root.add-selected-to-playlist(pl); }
+                reorder-playlist-tracks(pl, idx, tid) => { root.reorder-playlist-tracks(pl, idx, tid); }
 
                 search-filter             <=> root.search-filter;
                 search-filter-changed(s)  => { root.search-filter-changed(s); }
                 clear-search-filter       => { root.clear-search-filter(); }
+            }
+
+            // Tag assignment panel — visible when tracks are selected
+            if root.selected-track-count > 0: Rectangle {
+                height: 44px;
+                background: #181825;
+
+                // top border
+                Rectangle { y: 0; height: 1px; width: parent.width; background: #313244; }
+
+                if root.selected-tags.length == 0: Text {
+                    text: "Create tags in the sidebar to organize tracks";
+                    color: #45475a;
+                    font-size: 11px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: parent.width;
+                    height: parent.height;
+                }
+
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    padding-top: 10px;
+                    padding-bottom: 10px;
+                    spacing: 6px;
+                    alignment: start;
+
+                    for tag in root.selected-tags: Rectangle {
+                        width: chip-text.preferred-width + 20px;
+                        height: 24px;
+                        border-radius: 12px;
+                        background: tag.assigned ? tag.color
+                                  : (tag.partial  ? tag.color.with-alpha(0.2) : transparent);
+                        border-width: 1px;
+                        border-color: tag.assigned || tag.partial ? tag.color : #45475a;
+
+                        chip-text := Text {
+                            x: (parent.width - self.preferred-width) / 2;
+                            y: (parent.height - self.preferred-height) / 2;
+                            text: tag.name;
+                            color: tag.assigned
+                                ? (tag.text-dark ? #1e1e2e : #cdd6f4)
+                                : (tag.partial ? tag.color : #6c7086);
+                            font-size: 11px;
+                        }
+
+                        TouchArea {
+                            clicked => { root.toggle-tag-for-selection(tag.id); }
+                        }
+                    }
+                }
             }
 
             PlayerPanel {
@@ -197,8 +256,6 @@ export component AppWindow inherits Window {
                 now-playing-title: root.now-playing-title;
                 now-playing-artist: root.now-playing-artist;
                 current-track-id:  root.current-track-id;
-                nav-kind:          root.nav-kind;
-                nav-id:            root.nav-id;
 
                 is-playing <=> root.is-playing;
 
@@ -207,7 +264,6 @@ export component AppWindow inherits Window {
                 pause             => { root.pause(); }
                 prev-track        => { root.prev-track(); }
                 next-track        => { root.next-track(); }
-                add-to-playlist(pl, tr) => { root.add-to-playlist(pl, tr); }
             }
         }
     }

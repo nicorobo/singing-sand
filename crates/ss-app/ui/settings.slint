@@ -1,19 +1,22 @@
-import { CheckBox, Slider, ComboBox } from "std-widgets.slint";
+import { Slider, ComboBox } from "std-widgets.slint";
 
 export component SettingsWindow inherits Window {
     title: "Waveform Settings";
     background: #1e1e2e;
     preferred-width: 320px;
-    preferred-height: 440px;
+    preferred-height: 620px;
 
     // in-out properties (initialized from Rust on open)
-    in-out property <float> amplitude-scale: 1.0;
-    in-out property <float> low-gain:        1.0;
-    in-out property <float> mid-gain:        1.0;
-    in-out property <float> high-gain:       1.0;
-    in-out property <int>   display-style:   0;   // 0=Mirrored, 1=TopHalf
-    in-out property <int>   color-scheme:    0;   // 0..3
-    in-out property <bool>  normalize:       false;
+    in-out property <float> amplitude-scale:  1.0;
+    in-out property <float> low-gain:         1.0;
+    in-out property <float> mid-gain:         1.0;
+    in-out property <float> high-gain:        1.0;
+    in-out property <int>   display-style:    0;   // 0=Mirrored, 1=TopHalf
+    in-out property <int>   color-scheme:     0;   // 0..3
+    in-out property <int>   normalize-mode:   0;   // 0=None, 1=PerBand, 2=Global
+    in-out property <float> gamma:            0.6;
+    in-out property <float> noise-floor:      0.0;
+    in-out property <float> smoothing:        1.0; // 1–8, rounded to int
 
     // Preview waveform image (rendered by Rust, pushed on every settings change)
     in property <image> preview-waveform;
@@ -28,9 +31,15 @@ export component SettingsWindow inherits Window {
     callback mid-gain-released(float);
     callback high-gain-changed(float);
     callback high-gain-released(float);
+    callback gamma-changed(float);
+    callback gamma-released(float);
+    callback noise-floor-changed(float);
+    callback noise-floor-released(float);
+    callback smoothing-changed(float);
+    callback smoothing-released(float);
     callback display-style-changed(int);
     callback color-scheme-changed(int);
-    callback normalize-changed(bool);
+    callback normalize-mode-changed(int);
 
     VerticalLayout {
         padding: 16px;
@@ -152,7 +161,7 @@ export component SettingsWindow inherits Window {
         }
 
         ComboBox {
-            model: ["Mirrored", "Top Half"];
+            model: ["Mirrored", "Half"];
             current-index: root.display-style;
             selected(v) => {
                 root.display-style = self.current-index;
@@ -177,12 +186,111 @@ export component SettingsWindow inherits Window {
         }
 
         // ── Normalization ─────────────────────────────────────────────────────
-        CheckBox {
-            text: "Normalize per track";
-            checked: root.normalize;
-            toggled => {
-                root.normalize = self.checked;
-                root.normalize-changed(self.checked);
+        Text {
+            text: "NORMALIZE";
+            color: #45475a;
+            font-size: 10px;
+        }
+
+        ComboBox {
+            model: ["None", "Per Band", "Global"];
+            current-index: root.normalize-mode;
+            selected(v) => {
+                root.normalize-mode = self.current-index;
+                root.normalize-mode-changed(self.current-index);
+            }
+        }
+
+        // ── Gamma ─────────────────────────────────────────────────────────────
+        Text {
+            text: "GAMMA";
+            color: #45475a;
+            font-size: 10px;
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Slider {
+                horizontal-stretch: 1;
+                minimum: 0.3;
+                maximum: 1.5;
+                value: root.gamma;
+                changed(v) => {
+                    root.gamma = v;
+                    root.gamma-changed(v);
+                }
+                released(v) => {
+                    root.gamma-released(v);
+                }
+            }
+            Text {
+                text: Math.round(root.gamma * 100) / 100 + "";
+                color: #a6adc8;
+                font-size: 11px;
+                vertical-alignment: center;
+                width: 36px;
+            }
+        }
+
+        // ── Noise floor ───────────────────────────────────────────────────────
+        Text {
+            text: "NOISE FLOOR";
+            color: #45475a;
+            font-size: 10px;
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Slider {
+                horizontal-stretch: 1;
+                minimum: 0.0;
+                maximum: 0.2;
+                value: root.noise-floor;
+                changed(v) => {
+                    root.noise-floor = v;
+                    root.noise-floor-changed(v);
+                }
+                released(v) => {
+                    root.noise-floor-released(v);
+                }
+            }
+            Text {
+                text: Math.round(root.noise-floor * 100) / 100 + "";
+                color: #a6adc8;
+                font-size: 11px;
+                vertical-alignment: center;
+                width: 36px;
+            }
+        }
+
+        // ── Smoothing ─────────────────────────────────────────────────────────
+        Text {
+            text: "SMOOTHING";
+            color: #45475a;
+            font-size: 10px;
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Slider {
+                horizontal-stretch: 1;
+                minimum: 1.0;
+                maximum: 8.0;
+                value: root.smoothing;
+                changed(v) => {
+                    root.smoothing = v;
+                    root.smoothing-changed(v);
+                }
+                released(v) => {
+                    root.smoothing-released(v);
+                }
+            }
+            Text {
+                text: Math.round(root.smoothing) + "";
+                color: #a6adc8;
+                font-size: 11px;
+                vertical-alignment: center;
+                width: 36px;
             }
         }
     }

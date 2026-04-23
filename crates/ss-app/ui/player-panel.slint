@@ -37,8 +37,6 @@ export component PlayerPanel inherits VerticalLayout {
     in property <string> now-playing-title;
     in property <string> now-playing-artist;
     in property <int>    current-track-id: -1;
-    in property <int>    nav-kind;
-    in property <int>    nav-id;
 
     in-out property <bool> is-playing: false;
 
@@ -47,7 +45,6 @@ export component PlayerPanel inherits VerticalLayout {
     callback pause();
     callback prev-track();
     callback next-track();
-    callback add-to-playlist(int, int);
 
     // Waveform display
     waveform-rect := Rectangle {
@@ -184,19 +181,4 @@ export component PlayerPanel inherits VerticalLayout {
         }
     }
 
-    // Shown only when browsing a playlist — adds current track
-    if root.nav-kind == 2 && root.current-track-id >= 0: Rectangle {
-        height: 52px;
-        background: #181825;
-
-        HorizontalLayout {
-            alignment: center;
-            padding: 10px;
-
-            Button {
-                text: "Add to playlist";
-                clicked => { root.add-to-playlist(root.nav-id, root.current-track-id); }
-            }
-        }
-    }
 }

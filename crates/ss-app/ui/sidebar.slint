@@ -1,5 +1,5 @@
 import { LineEdit, ScrollView } from "std-widgets.slint";
-import { SidebarEntry, DirTreeItem } from "types.slint";
+import { SidebarEntry, DirTreeItem, SidebarTagItem, SidebarTagRow, TagColorOption } from "types.slint";
 
 export component Sidebar inherits Rectangle {
     width: 200px;
@@ -7,7 +7,8 @@ export component Sidebar inherits Rectangle {
 
     in property <[DirTreeItem]>   dir-tree-items;
     in property <[SidebarEntry]>  sidebar-playlists;
-    in property <[SidebarEntry]>  sidebar-tags;
+    in property <[SidebarTagRow]> sidebar-tag-rows;
+    in property <[TagColorOption]> tag-color-palette;
 
     // Drag state — read from parent, written to parent
     in property <int>    drag-track-id;
@@ -30,8 +31,18 @@ export component Sidebar inherits Rectangle {
     callback toggle-dir-expanded(string);
     callback remove-scanned-dir(string);
     callback create-playlist(string);
-    callback create-tag(string);
+    callback create-tag(string, string);   // name, color hex
+    callback delete-tag(int);
+    callback update-tag(int, string, string);   // id, name, color hex
     callback settings-clicked();
+
+    // Tag creation/edit state
+    in-out property <string> creating-tag-color: "#89b4fa";
+    in-out property <color>  creating-tag-color-value: #89b4fa;  // mirror for display
+    in-out property <bool>   color-picker-open: false;
+    in-out property <bool>   editing-tag: false;
+    in-out property <int>    editing-tag-id: -1;
+    in-out property <string> editing-tag-name: "";
 
     VerticalLayout {
         sidebar-scroll := ScrollView {
@@ -311,57 +322,189 @@ export component Sidebar inherits Rectangle {
                                 font-size: 14px;
                             }
                             add-tag-ta := TouchArea {
-                                clicked => { root.creating-tag = true; }
+                                clicked => {
+                                    root.editing-tag = false;
+                                    root.editing-tag-id = -1;
+                                    root.editing-tag-name = "";
+                                    root.creating-tag-color = "#89b4fa";
+                                    root.creating-tag-color-value = #89b4fa;
+                                    root.creating-tag = true;
+                                }
                             }
                         }
                     }
                 }
 
-                for tag in root.sidebar-tags: Rectangle {
-                    height: 32px;
-                    background: root.nav-kind == 3 && root.nav-id == tag.id
-                        ? #313244
-                        : (tag-ta.has-hover ? #1e1e2e : transparent);
+                // Tag pills — one HorizontalLayout per row (rows pre-computed in Rust)
+                for row in root.sidebar-tag-rows: HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 8px;
+                    padding-top: 3px;
+                    padding-bottom: 3px;
+                    spacing: 6px;
+                    alignment: start;
 
-                    HorizontalLayout {
-                        padding-left: 20px;
-                        Text {
-                            text: tag.label;
-                            color: root.nav-kind == 3 && root.nav-id == tag.id
-                                ? #cdd6f4 : #a6adc8;
-                            font-size: 12px;
-                            vertical-alignment: center;
-                            overflow: elide;
+                    for tag in row.items: tag-ctx-menu := ContextMenuArea {
+                        width: pill-text.preferred-width + 20px;
+                        height: 22px;
+
+                        Menu {
+                            MenuItem {
+                                title: "Edit";
+                                activated => {
+                                    root.editing-tag = true;
+                                    root.editing-tag-id = tag.id;
+                                    root.editing-tag-name = tag.name;
+                                    root.creating-tag-color = tag.color-hex;
+                                    root.creating-tag-color-value = tag.color;
+                                    root.creating-tag = true;
+                                    root.color-picker-open = false;
+                                }
+                            }
+                            MenuItem {
+                                title: "Delete";
+                                activated => { root.delete-tag(tag.id); }
+                            }
                         }
-                    }
 
-                    tag-ta := TouchArea {
-                        clicked => {
-                            root.nav-kind = 3;
-                            root.nav-id = tag.id;
-                            root.nav-dir = "";
-                            root.nav-tag(tag.id);
+                        pill-rect := Rectangle {
+                            property <bool> active: root.nav-kind == 3 && root.nav-id == tag.id;
+                            width: parent.width;
+                            height: 22px;
+                            border-radius: 11px;
+                            background: active ? tag.color.darker(0.2)
+                                               : (tag-pill-ta.has-hover ? tag.color.brighter(0.05) : tag.color);
+
+                            pill-text := Text {
+                                x: (parent.width - self.preferred-width) / 2;
+                                y: (parent.height - self.preferred-height) / 2;
+                                text: tag.name;
+                                color: tag.text-dark ? #1e1e2e : #cdd6f4;
+                                font-size: 11px;
+                            }
+
+                            tag-pill-ta := TouchArea {
+                                clicked => {
+                                    root.nav-kind = 3;
+                                    root.nav-id = tag.id;
+                                    root.nav-dir = "";
+                                    root.color-picker-open = false;
+                                    root.nav-tag(tag.id);
+                                }
+                                pointer-event(e) => {
+                                    if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                                        tag-ctx-menu.show({x: self.mouse-x, y: self.mouse-y});
+                                    }
+                                }
+                            }
                         }
                     }
                 }
 
-                if root.creating-tag: Rectangle {
-                    height: 32px;
-                    HorizontalLayout {
-                        padding-left: 16px;
-                        padding-right: 8px;
-                        padding-top: 4px;
-                        padding-bottom: 4px;
-                        new-tag-input := LineEdit {
-                            placeholder-text: "Tag name…";
-                            font-size: 12px;
-                            horizontal-stretch: 1;
-                            accepted(text) => {
-                                if text != "" {
-                                    root.create-tag(text);
+                // Tag creation / edit form
+                if root.creating-tag: VerticalLayout {
+                    spacing: 0px;
+                    init => {
+                        if root.editing-tag {
+                            new-tag-input.text = root.editing-tag-name;
+                        }
+                    }
+
+                    // Row 1: name input
+                    Rectangle {
+                        height: 32px;
+                        HorizontalLayout {
+                            padding-left: 16px;
+                            padding-right: 8px;
+                            padding-top: 4px;
+                            padding-bottom: 4px;
+                            new-tag-input := LineEdit {
+                                placeholder-text: "Tag name…";
+                                font-size: 12px;
+                                horizontal-stretch: 1;
+                                accepted(text) => {
+                                    if text != "" {
+                                        if root.editing-tag {
+                                            root.update-tag(root.editing-tag-id, text, root.creating-tag-color);
+                                        } else {
+                                            root.create-tag(text, root.creating-tag-color);
+                                        }
+                                    }
+                                    root.creating-tag = false;
+                                    root.editing-tag = false;
+                                    root.editing-tag-id = -1;
+                                    root.editing-tag-name = "";
+                                    root.color-picker-open = false;
+                                    root.creating-tag-color = "#89b4fa";
+                                    root.creating-tag-color-value = #89b4fa;
+                                    self.text = "";
                                 }
-                                root.creating-tag = false;
-                                self.text = "";
+                            }
+                        }
+                    }
+
+                    // Row 2: selected color circle (click to open palette)
+                    Rectangle {
+                        height: 28px;
+                        HorizontalLayout {
+                            padding-left: 16px;
+                            padding-top: 4px;
+                            padding-bottom: 4px;
+                            spacing: 6px;
+                            alignment: start;
+
+                            // Shows the currently selected color; click to toggle palette
+                            color-swatch := Rectangle {
+                                width: 18px;
+                                height: 18px;
+                                border-radius: 9px;
+                                border-width: 2px;
+                                border-color: color-swatch-ta.has-hover ? #cdd6f4 : #45475a;
+                                background: root.creating-tag-color-value;
+
+                                color-swatch-ta := TouchArea {
+                                    clicked => {
+                                        root.color-picker-open = !root.color-picker-open;
+                                    }
+                                }
+                            }
+
+                            Text {
+                                text: root.color-picker-open ? "Pick a color:" : "Color";
+                                color: #6c7086;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Row 3: color palette (shown when color-picker-open)
+                    if root.color-picker-open: Rectangle {
+                        height: 32px;
+                        HorizontalLayout {
+                            padding-left: 16px;
+                            padding-right: 8px;
+                            padding-top: 6px;
+                            padding-bottom: 6px;
+                            spacing: 6px;
+                            alignment: start;
+
+                            for c in root.tag-color-palette: Rectangle {
+                                property <bool> selected: root.creating-tag-color == c.hex;
+                                width: 20px;
+                                height: 20px;
+                                border-radius: 10px;
+                                background: c.color;
+                                border-width: selected ? 2px : 0px;
+                                border-color: #cdd6f4;
+
+                                TouchArea {
+                                    clicked => {
+                                        root.creating-tag-color = c.hex;
+                                        root.creating-tag-color-value = c.color;
+                                        root.color-picker-open = false;
+                                    }
+                                }
                             }
                         }
                     }

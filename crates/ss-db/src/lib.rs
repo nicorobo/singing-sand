@@ -15,6 +15,7 @@ pub struct Playlist {
 pub struct Tag {
     pub id: i64,
     pub name: String,
+    pub color: String,
 }
 
 /// Parameters for inserting or upserting a track (no ID yet).
@@ -493,6 +494,30 @@ impl Db {
         Ok(())
     }
 
+    /// Reorder tracks in a playlist. `ordered_track_ids` must contain every
+    /// track_id currently in the playlist, in the desired new order.
+    /// Positions are assigned as 0, 1, 2, … matching the slice index.
+    pub async fn reorder_playlist_tracks(
+        &self,
+        playlist_id: i64,
+        ordered_track_ids: &[i64],
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        for (pos, &track_id) in ordered_track_ids.iter().enumerate() {
+            sqlx::query(
+                "UPDATE playlist_tracks SET position = ? WHERE playlist_id = ? AND track_id = ?",
+            )
+            .bind(pos as i64)
+            .bind(playlist_id)
+            .bind(track_id)
+            .execute(&mut *tx)
+            .await
+            .context("reorder_playlist_tracks: update failed")?;
+        }
+        tx.commit().await.context("reorder_playlist_tracks: commit failed")?;
+        Ok(())
+    }
+
     /// Remove a track from a playlist.
     pub async fn remove_track_from_playlist(&self, track_id: i64, playlist_id: i64) -> Result<bool> {
         let affected =
@@ -525,23 +550,27 @@ impl Db {
     // ── Tags ──────────────────────────────────────────────────────────────────
 
     /// Create a new tag. Returns the created tag.
-    pub async fn insert_tag(&self, name: &str) -> Result<Tag> {
-        let id: i64 = sqlx::query("INSERT INTO tags (name) VALUES (?)")
+    pub async fn insert_tag(&self, name: &str, color: &str) -> Result<Tag> {
+        let id: i64 = sqlx::query("INSERT INTO tags (name, color) VALUES (?, ?)")
             .bind(name)
+            .bind(color)
             .execute(&self.pool)
             .await
             .context("insert_tag failed")?
             .last_insert_rowid();
-        Ok(Tag { id, name: name.to_owned() })
+        Ok(Tag { id, name: name.to_owned(), color: color.to_owned() })
     }
 
     /// Return all tags ordered by name.
     pub async fn list_tags(&self) -> Result<Vec<Tag>> {
-        let rows = sqlx::query("SELECT id, name FROM tags ORDER BY name")
+        let rows = sqlx::query("SELECT id, name, color FROM tags ORDER BY name")
             .fetch_all(&self.pool)
             .await
             .context("list_tags failed")?;
-        Ok(rows.iter().map(|r| Tag { id: r.get("id"), name: r.get("name") }).collect())
+        Ok(rows
+            .iter()
+            .map(|r| Tag { id: r.get("id"), name: r.get("name"), color: r.get("color") })
+            .collect())
     }
 
     /// Delete a tag by ID. Returns true if a row was removed.
@@ -551,6 +580,19 @@ impl Db {
             .execute(&self.pool)
             .await
             .context("delete_tag failed")?
+            .rows_affected();
+        Ok(affected > 0)
+    }
+
+    /// Update a tag's name and color. Returns true if a row was modified.
+    pub async fn update_tag(&self, id: i64, name: &str, color: &str) -> Result<bool> {
+        let affected = sqlx::query("UPDATE tags SET name = ?, color = ? WHERE id = ?")
+            .bind(name)
+            .bind(color)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .context("update_tag failed")?
             .rows_affected();
         Ok(affected > 0)
     }
@@ -584,7 +626,7 @@ impl Db {
     /// Return all tags assigned to a track.
     pub async fn list_tags_for_track(&self, track_id: i64) -> Result<Vec<Tag>> {
         let rows = sqlx::query(
-            r#"SELECT t.id, t.name FROM tags t
+            r#"SELECT t.id, t.name, t.color FROM tags t
                JOIN track_tags tt ON tt.tag_id = t.id
                WHERE tt.track_id = ?
                ORDER BY t.name"#,
@@ -593,7 +635,38 @@ impl Db {
         .fetch_all(&self.pool)
         .await
         .context("list_tags_for_track failed")?;
-        Ok(rows.iter().map(|r| Tag { id: r.get("id"), name: r.get("name") }).collect())
+        Ok(rows
+            .iter()
+            .map(|r| Tag { id: r.get("id"), name: r.get("name"), color: r.get("color") })
+            .collect())
+    }
+
+    /// Return all (track_id, Tag) pairs for a set of track IDs.
+    /// Used to compute per-selection tag assignment state efficiently.
+    pub async fn list_tags_for_tracks(&self, track_ids: &[i64]) -> Result<Vec<(i64, Tag)>> {
+        if track_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        // Build a parameterised IN clause
+        let placeholders = track_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let sql = format!(
+            r#"SELECT tt.track_id, t.id, t.name, t.color FROM tags t
+               JOIN track_tags tt ON tt.tag_id = t.id
+               WHERE tt.track_id IN ({placeholders})
+               ORDER BY t.name"#
+        );
+        let mut q = sqlx::query(&sql);
+        for id in track_ids {
+            q = q.bind(id);
+        }
+        let rows = q.fetch_all(&self.pool).await.context("list_tags_for_tracks failed")?;
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let tag = Tag { id: r.get("id"), name: r.get("name"), color: r.get("color") };
+                (r.get::<i64, _>("track_id"), tag)
+            })
+            .collect())
     }
 
     /// Fetch the notes stored on a track. Returns `None` if no note has been written.
@@ -909,6 +982,25 @@ mod tests {
         // Track in no playlists
         let t2 = db.insert_track(&new_track("/music/no-playlists.mp3")).await.unwrap();
         assert!(db.list_playlists_for_track(t2.id).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn reorder_playlist_tracks_test() {
+        let db = setup().await;
+        let t1 = db.insert_track(&new_track("/music/a.mp3")).await.unwrap();
+        let t2 = db.insert_track(&new_track("/music/b.mp3")).await.unwrap();
+        let t3 = db.insert_track(&new_track("/music/c.mp3")).await.unwrap();
+        let pl = db.insert_playlist("reorder-test").await.unwrap();
+        db.add_track_to_playlist(t1.id, pl.id).await.unwrap();
+        db.add_track_to_playlist(t2.id, pl.id).await.unwrap();
+        db.add_track_to_playlist(t3.id, pl.id).await.unwrap();
+        // Reverse order
+        db.reorder_playlist_tracks(pl.id, &[t3.id, t1.id, t2.id]).await.unwrap();
+        let tracks = db.list_tracks_in_playlist(pl.id).await.unwrap();
+        assert_eq!(
+            tracks.iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![t3.id, t1.id, t2.id]
+        );
     }
 
     #[tokio::test]

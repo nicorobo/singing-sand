@@ -5,21 +5,23 @@ import { TrackItem, TagItem, ExpandedTagItem, ExpandedPlaylistItem } from "types
 // view on click) and a × remove button. The two touch areas are non-overlapping.
 component TagPill inherits Rectangle {
     in property <string> tag-name;
+    in property <color>  tag-color: #89b4fa;
+    in property <bool>   tag-text-dark: false;
     callback navigate();
     callback remove();
 
     height: 22px;
     border-radius: 11px;
-    background: #89b4fa1a;
+    background: tag-color.with-alpha(0.12);
     border-width: 1px;
-    border-color: #89b4fa55;
+    border-color: tag-color.with-alpha(0.4);
     width: pill-text.preferred-width + 32px;  // 8 left + text + 2 gap + 18 btn + 4 right
 
     pill-text := Text {
         x: 8px;
         y: (parent.height - self.preferred-height) / 2;
         text: root.tag-name;
-        color: #89b4fa;
+        color: root.tag-color;
         font-size: 11px;
     }
 
@@ -126,6 +128,8 @@ component ExpandedTrackPanel inherits Rectangle {
 
                 for tag in root.tags: TagPill {
                     tag-name: tag.name;
+                    tag-color: tag.color;
+                    tag-text-dark: tag.text-dark;
                     navigate => { root.navigate-tag(tag.id); }
                     remove => { root.remove-tag(tag.id); }
                 }
@@ -224,7 +228,6 @@ export component TrackList inherits VerticalLayout {
     horizontal-stretch: 1;
 
     in property <[TrackItem]>            tracks;
-    in property <[TagItem]>              current-track-tags;
     in property <[ExpandedTagItem]>      expanded-track-tags;
     in property <[ExpandedPlaylistItem]> expanded-track-playlists;
     in property <string>                 expanded-track-notes;
@@ -240,6 +243,8 @@ export component TrackList inherits VerticalLayout {
     in-out property <int>    drag-over-playlist-id: -1;
     in-out property <bool>   drag-is-multi: false;
     in-out property <int>    drag-count: 0;
+    in-out property <bool>   reorder-active: false;
+    in-out property <int>    reorder-drop-index: -1;
     in-out property <int>    nav-kind;
     in-out property <int>    nav-id;
     in-out property <string> nav-dir;
@@ -248,13 +253,13 @@ export component TrackList inherits VerticalLayout {
     callback expand-track(int);
     callback remove-tag-from-expanded(int);
     callback save-notes(int, string);
-    callback toggle-tag(int, bool);
     callback add-to-playlist(int, int);
     callback remove-from-playlist(int, int);
     callback nav-tag(int);
     callback nav-playlist(int);
     callback track-clicked(int, bool, bool);       // id, shift, meta
     callback add-selected-to-playlist(int);        // playlist-id
+    callback reorder-playlist-tracks(int, int, int); // playlist-id, drop-index, drag-track-id
 
     in-out property <string> search-filter: "";
     callback search-filter-changed(string);
@@ -367,10 +372,10 @@ export component TrackList inherits VerticalLayout {
     }
 
     // Track list
-    ListView {
+    lv := ListView {
         vertical-stretch: 1;
 
-        for track in root.tracks: Rectangle {
+        for track[idx] in root.tracks: Rectangle {
             property <bool>   is-expanded: root.expanded-track-id == track.id;
             property <length> panel-height: 240px;
             height: is-expanded ? 44px + panel-height : 44px;
@@ -396,6 +401,21 @@ export component TrackList inherits VerticalLayout {
                 background: track.selected
                     ? (root.current-track-id == track.id ? #89b4fa : #585b7a)
                     : transparent;
+            }
+
+            // Drop indicator — top of row (insert before this row)
+            if root.reorder-active && root.reorder-drop-index == idx && root.drag-x >= 200px: Rectangle {
+                x: 0; y: 0;
+                width: parent.width; height: 2px;
+                background: #89b4fa;
+            }
+
+            // Drop indicator — bottom of last row (insert after all rows)
+            if root.reorder-active && root.reorder-drop-index == root.tracks.length
+                    && idx == root.tracks.length - 1 && root.drag-x >= 200px: Rectangle {
+                x: 0; y: parent.height - 2px;
+                width: parent.width; height: 2px;
+                background: #89b4fa;
             }
 
             // ── Top row ───────────────────────────────────────────────
@@ -484,7 +504,9 @@ export component TrackList inherits VerticalLayout {
                             }
                             if e.kind == PointerEventKind.up && root.drag-track-id == track.id {
                                 did-drag = true;
-                                if root.drag-over-playlist-id >= 0 {
+                                if root.reorder-active && root.drag-x >= 200px && root.reorder-drop-index >= 0 {
+                                    root.reorder-playlist-tracks(root.nav-id, root.reorder-drop-index, track.id);
+                                } else if root.drag-over-playlist-id >= 0 {
                                     if root.drag-is-multi {
                                         root.add-selected-to-playlist(root.drag-over-playlist-id);
                                     } else {
@@ -494,6 +516,8 @@ export component TrackList inherits VerticalLayout {
                                 root.drag-track-id = -1;
                                 root.drag-title = "";
                                 root.drag-is-multi = false;
+                                root.reorder-active = false;
+                                root.reorder-drop-index = -1;
                             }
                         }
                         moved => {
@@ -513,6 +537,16 @@ export component TrackList inherits VerticalLayout {
                             if root.drag-track-id == track.id {
                                 root.drag-x = self.absolute-position.x + self.mouse-x;
                                 root.drag-y = self.absolute-position.y + self.mouse-y;
+                                if root.nav-kind == 2 && !root.reorder-active {
+                                    root.reorder-active = true;
+                                }
+                                if root.reorder-active {
+                                    root.reorder-drop-index = clamp(
+                                        Math.floor((root.drag-y - lv.absolute-position.y - lv.viewport-y + 22px) / 44px),
+                                        0,
+                                        root.tracks.length
+                                    );
+                                }
                             }
                         }
                         clicked => {
@@ -612,49 +646,4 @@ export component TrackList inherits VerticalLayout {
         }
     }
 
-    // Tag assignment bar (visible when a track is selected)
-    if root.current-track-id >= 0: Rectangle {
-        height: 40px;
-        background: #181825;
-
-        if root.current-track-tags.length == 0: Text {
-            text: "Create tags in the sidebar to organize tracks";
-            color: #45475a;
-            font-size: 11px;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-            width: parent.width;
-            height: parent.height;
-        }
-
-        HorizontalLayout {
-            padding-left: 12px;
-            padding-right: 12px;
-            padding-top: 8px;
-            padding-bottom: 8px;
-            spacing: 6px;
-            alignment: start;
-
-            for tag in root.current-track-tags: Rectangle {
-                width: chip-text.preferred-width + 16px;
-                height: 24px;
-                border-radius: 12px;
-                background: tag.assigned ? #89b4fa26 : transparent;
-                border-width: 1px;
-                border-color: tag.assigned ? #89b4fa : #45475a;
-
-                chip-text := Text {
-                    x: 8px;
-                    y: 4px;
-                    text: tag.name;
-                    color: tag.assigned ? #89b4fa : #6c7086;
-                    font-size: 11px;
-                }
-
-                TouchArea {
-                    clicked => { root.toggle-tag(tag.id, !tag.assigned); }
-                }
-            }
-        }
-    }
 }

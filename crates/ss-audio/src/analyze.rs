@@ -192,18 +192,11 @@ pub fn analyze_track(path: &Path, num_buckets: usize) -> Result<AnalysisResult> 
         })
         .collect();
 
-    // Normalise each band independently.
-    let peak_low  = band_rms_raw.iter().map(|b| b.0).fold(0.0_f32, f32::max);
-    let peak_mid  = band_rms_raw.iter().map(|b| b.1).fold(0.0_f32, f32::max);
-    let peak_high = band_rms_raw.iter().map(|b| b.2).fold(0.0_f32, f32::max);
-
+    // Store raw RMS values — normalization is applied at render time so the
+    // NormalizeMode setting (None / PerBand / Global) has a meaningful effect.
     let waveform: Vec<WaveformBucket> = band_rms_raw
         .iter()
-        .map(|(l, m, h)| WaveformBucket {
-            low:  if peak_low  > 0.0 { l / peak_low  } else { 0.0 },
-            mid:  if peak_mid  > 0.0 { m / peak_mid  } else { 0.0 },
-            high: if peak_high > 0.0 { h / peak_high } else { 0.0 },
-        })
+        .map(|(l, m, h)| WaveformBucket { low: *l, mid: *m, high: *h })
         .collect();
 
     Ok(AnalysisResult { waveform })
