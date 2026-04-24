@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ExpandedTrackDto } from "../../types";
+import { TagChip } from "../TagChip/TagChip";
 import styles from "./TrackList.module.scss";
 
 function formatDuration(secs: number): string {
@@ -36,6 +37,13 @@ export function ExpandedTrackRow({ trackId, durationSecs }: Props) {
     setData((d) => (d ? { ...d, tags } : d));
   };
 
+  const handlePlaylistRemove = async (playlistId: number) => {
+    await invoke("remove_from_playlist", { playlist_id: playlistId, track_id: trackId });
+    setData((d) =>
+      d ? { ...d, playlists: d.playlists.filter((p) => p.id !== playlistId) } : d
+    );
+  };
+
   const handleNotesChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const text = e.target.value;
     setNotes(text);
@@ -51,24 +59,29 @@ export function ExpandedTrackRow({ trackId, durationSecs }: Props) {
     <div className={styles.expandedRow}>
       <div className={styles.expandedMeta}>
         <span>{formatDuration(durationSecs)}</span>
-        {data.playlists.length > 0 && (
-          <span className={styles.expandedPlaylists}>
-            In: {data.playlists.map((p) => p.name).join(", ")}
+        {data.playlists.map((p) => (
+          <span key={p.id} className={styles.playlistBadge}>
+            {p.name}
+            <button
+              className={styles.playlistRemoveBtn}
+              onClick={() => handlePlaylistRemove(p.id)}
+              title={`Remove from "${p.name}"`}
+            >
+              ×
+            </button>
           </span>
-        )}
+        ))}
       </div>
 
       {data.tags.length > 0 && (
         <div className={styles.expandedTags}>
           {data.tags.map((tag) => (
-            <span
+            <TagChip
               key={tag.id}
-              className={styles.tagChip}
-              style={{ backgroundColor: tag.color + "33", color: tag.color }}
-            >
-              {tag.name}
-              <button onClick={() => handleTagRemove(tag.id)} title="Remove tag">×</button>
-            </span>
+              name={tag.name}
+              color={tag.color}
+              onRemove={() => handleTagRemove(tag.id)}
+            />
           ))}
         </div>
       )}

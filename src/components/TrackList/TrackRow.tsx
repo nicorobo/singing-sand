@@ -12,9 +12,10 @@ function cx(...classes: (string | false | undefined)[]) {
 
 interface Props {
   track: TrackDto;
+  isReorderable?: boolean;
 }
 
-export function TrackRow({ track }: Props) {
+export function TrackRow({ track, isReorderable }: Props) {
   const selectedIds = useLibraryStore((s) => s.selectedIds);
   const setSelectedIds = useLibraryStore((s) => s.setSelectedIds);
   const setTagItems = useLibraryStore((s) => s.setTagItems);
@@ -68,11 +69,15 @@ export function TrackRow({ track }: Props) {
         className={cx(
           styles.row,
           isSelected && styles.selected,
-          isExpanded && styles.expanded
+          isExpanded && styles.expanded,
         )}
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
       >
+        {isReorderable && (
+          <span className={styles.dragHandle} title="Drag to reorder">⠿</span>
+        )}
+
         {!artError ? (
           <img
             className={styles.art}

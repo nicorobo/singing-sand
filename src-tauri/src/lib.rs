@@ -21,7 +21,7 @@ use analysis::AnalysisQueue;
 use commands::{
     directories::{add_directory, emit_dir_tree, remove_scanned_dir, toggle_dir_expanded},
     library::{get_sidebar_data, nav_all, nav_playlist, nav_select_dir, nav_tag, search_tracks},
-    playlists::{add_selected_to_playlist, add_to_playlist, create_playlist, remove_from_playlist, reorder_playlist_tracks},
+    playlists::{add_selected_to_playlist, add_to_playlist, create_playlist, delete_playlist, remove_from_playlist, reorder_playlist_tracks},
     settings::{get_settings, update_waveform_setting},
     tags::{create_tag, delete_tag, toggle_tag_for_selection, update_tag},
     tracks::{expand_track, remove_tag_from_expanded, save_notes, track_clicked},
@@ -184,6 +184,7 @@ pub fn run() {
             update_tag,
             toggle_tag_for_selection,
             create_playlist,
+            delete_playlist,
             add_to_playlist,
             remove_from_playlist,
             reorder_playlist_tracks,

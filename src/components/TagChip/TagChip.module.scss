@@ -1,0 +1,21 @@
+@use '../../styles/variables' as *;
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+}
+
+.remove {
+  opacity: 0.6;
+  font-size: 13px;
+  line-height: 1;
+  margin-left: 2px;
+
+  &:hover {
+    opacity: 1;
+  }
+}

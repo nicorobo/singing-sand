@@ -45,6 +45,18 @@ pub async fn reorder_playlist_tracks(
 }
 
 #[tauri::command]
+pub async fn delete_playlist(
+    playlist_id: i64,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<PlaylistDto>, String> {
+    state.db.delete_playlist(playlist_id).await.map_err(|e| e.to_string())?;
+    let playlists: Vec<PlaylistDto> = state.db.list_playlists().await.map_err(|e| e.to_string())?.iter().map(PlaylistDto::from).collect();
+    app.emit("sidebar-playlists-updated", &playlists).ok();
+    Ok(playlists)
+}
+
+#[tauri::command]
 pub async fn add_selected_to_playlist(
     playlist_id: i64,
     sel_ids: Vec<i64>,

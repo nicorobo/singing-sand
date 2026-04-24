@@ -1,0 +1,52 @@
+@use '../../styles/variables' as *;
+
+.panel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  background: $mantle;
+  border-top: 1px solid $surface0;
+  flex-shrink: 0;
+  min-height: 36px;
+}
+
+.label {
+  font-size: 11px;
+  color: $overlay1;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: opacity 0.1s;
+
+  &:hover {
+    opacity: 0.85;
+  }
+
+  &.assigned {
+    opacity: 1;
+  }
+
+  &.partial {
+    opacity: 0.9;
+  }
+}
+
+.partialDot {
+  font-size: 10px;
+}

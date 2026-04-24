@@ -1,14 +1,16 @@
-import React from "react";
+import React, { useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSidebarStore, NavItem } from "../../stores/sidebarStore";
 import { useLibraryStore } from "../../stores/libraryStore";
-import { DirTreeItemDto } from "../../types";
+import { DirTreeItemDto, PlaylistDto, TagDto } from "../../types";
 import { useNavigation } from "../../hooks/useNavigation";
 import styles from "./Sidebar.module.scss";
 
 function cx(...classes: (string | false | undefined)[]) {
   return classes.filter(Boolean).join(" ");
 }
+
+// ─── DirTree ────────────────────────────────────────────────────────────────
 
 function DirTree() {
   const dirs = useSidebarStore((s) => s.dirs);
@@ -77,11 +79,19 @@ function DirTree() {
   );
 }
 
+// ─── PlaylistList ────────────────────────────────────────────────────────────
+
 function PlaylistList() {
   const playlists = useSidebarStore((s) => s.playlists);
+  const setPlaylists = useSidebarStore((s) => s.setPlaylists);
   const nav = useSidebarStore((s) => s.nav);
   const setNav = useSidebarStore((s) => s.setNav);
   const { fetchTracks } = useNavigation();
+
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [dragOverId, setDragOverId] = useState<number | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const handleClick = async (id: number) => {
     const next: NavItem = { type: "playlist", id };
@@ -89,57 +99,318 @@ function PlaylistList() {
     await fetchTracks(next);
   };
 
-  if (playlists.length === 0) {
-    return <p className={styles.emptyHint}>No playlists</p>;
-  }
+  const handleDelete = async (e: React.MouseEvent, p: PlaylistDto) => {
+    e.stopPropagation();
+    if (!confirm(`Delete playlist "${p.name}"?`)) return;
+    try {
+      const updated = await invoke<PlaylistDto[]>("delete_playlist", { playlist_id: p.id });
+      setPlaylists(updated);
+      if (nav.type === "playlist" && nav.id === p.id) {
+        const next: NavItem = { type: "all" };
+        setNav(next);
+        await fetchTracks(next);
+      }
+    } catch (err) {
+      console.error("delete_playlist failed:", err);
+    }
+  };
+
+  const startCreate = () => {
+    setCreating(true);
+    setNewName("");
+    setTimeout(() => inputRef.current?.focus(), 0);
+  };
+
+  const cancelCreate = () => {
+    setCreating(false);
+    setNewName("");
+  };
+
+  const submitCreate = async () => {
+    const name = newName.trim();
+    if (!name) { cancelCreate(); return; }
+    try {
+      const updated = await invoke<PlaylistDto[]>("create_playlist", { name });
+      setPlaylists(updated);
+    } catch (err) {
+      console.error("create_playlist failed:", err);
+    }
+    cancelCreate();
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") submitCreate();
+    else if (e.key === "Escape") cancelCreate();
+  };
+
+  const handleDragOver = (e: React.DragEvent, id: number) => {
+    if (!e.dataTransfer.types.includes("track-id")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    setDragOverId(id);
+  };
+
+  const handleDragLeave = () => setDragOverId(null);
+
+  const handleDrop = async (e: React.DragEvent, playlistId: number) => {
+    e.preventDefault();
+    setDragOverId(null);
+    const raw = e.dataTransfer.getData("track-id");
+    if (!raw) return;
+    const trackId = parseInt(raw, 10);
+    if (isNaN(trackId)) return;
+    try {
+      await invoke("add_to_playlist", { playlist_id: playlistId, track_id: trackId });
+    } catch (err) {
+      console.error("add_to_playlist failed:", err);
+    }
+  };
 
   return (
     <>
+      <div className={styles.sectionHeader}>
+        <span>Playlists</span>
+        <button onClick={startCreate} title="New playlist">+</button>
+      </div>
+
+      {playlists.length === 0 && !creating && (
+        <p className={styles.emptyHint}>No playlists</p>
+      )}
+
       {playlists.map((p) => (
         <div
           key={p.id}
-          className={cx(styles.playlistItem, nav.type === "playlist" && nav.id === p.id && styles.active)}
+          className={cx(
+            styles.playlistItem,
+            nav.type === "playlist" && nav.id === p.id && styles.active,
+            dragOverId === p.id && styles.dropTarget,
+          )}
           onClick={() => handleClick(p.id)}
+          onDragOver={(e) => handleDragOver(e, p.id)}
+          onDragLeave={handleDragLeave}
+          onDrop={(e) => handleDrop(e, p.id)}
         >
-          {p.name}
+          <span className={styles.playlistName}>{p.name}</span>
+          <button
+            className={styles.deletePlaylist}
+            onClick={(e) => handleDelete(e, p)}
+            title="Delete playlist"
+          >
+            ×
+          </button>
         </div>
       ))}
+
+      {creating && (
+        <div className={styles.inlineForm}>
+          <input
+            ref={inputRef}
+            className={styles.inlineInput}
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onBlur={submitCreate}
+            placeholder="Playlist name…"
+          />
+        </div>
+      )}
     </>
   );
 }
 
+// ─── TagPills ────────────────────────────────────────────────────────────────
+
+interface TagEditForm {
+  name: string;
+  color: string;
+}
+
 function TagPills() {
   const tags = useSidebarStore((s) => s.tags);
+  const setTags = useSidebarStore((s) => s.setTags);
   const nav = useSidebarStore((s) => s.nav);
   const setNav = useSidebarStore((s) => s.setNav);
   const { fetchTracks } = useNavigation();
 
+  const [creating, setCreating] = useState(false);
+  const [newForm, setNewForm] = useState<TagEditForm>({ name: "", color: "#89b4fa" });
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editForm, setEditForm] = useState<TagEditForm>({ name: "", color: "#89b4fa" });
+  const nameInputRef = useRef<HTMLInputElement>(null);
+  const editNameRef = useRef<HTMLInputElement>(null);
+
   const handleClick = async (id: number) => {
+    if (editingId === id) return;
     const next: NavItem = { type: "tag", id };
     setNav(next);
     await fetchTracks(next);
   };
 
-  if (tags.length === 0) {
-    return <p className={styles.emptyHint}>No tags</p>;
-  }
+  const handleDelete = async (e: React.MouseEvent, tag: TagDto) => {
+    e.stopPropagation();
+    try {
+      const updated = await invoke<TagDto[]>("delete_tag", { tag_id: tag.id });
+      setTags(updated);
+      if (nav.type === "tag" && nav.id === tag.id) {
+        const next: NavItem = { type: "all" };
+        setNav(next);
+        await fetchTracks(next);
+      }
+    } catch (err) {
+      console.error("delete_tag failed:", err);
+    }
+  };
+
+  const startCreate = () => {
+    setCreating(true);
+    setNewForm({ name: "", color: "#89b4fa" });
+    setTimeout(() => nameInputRef.current?.focus(), 0);
+  };
+
+  const cancelCreate = () => {
+    setCreating(false);
+    setNewForm({ name: "", color: "#89b4fa" });
+  };
+
+  const submitCreate = async () => {
+    const name = newForm.name.trim();
+    if (!name) { cancelCreate(); return; }
+    try {
+      const updated = await invoke<TagDto[]>("create_tag", { name, color: newForm.color });
+      setTags(updated);
+    } catch (err) {
+      console.error("create_tag failed:", err);
+    }
+    cancelCreate();
+  };
+
+  const startEdit = (e: React.MouseEvent, tag: TagDto) => {
+    e.stopPropagation();
+    setEditingId(tag.id);
+    setEditForm({ name: tag.name, color: tag.color });
+    setCreating(false);
+    setTimeout(() => editNameRef.current?.focus(), 0);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+  };
+
+  const submitEdit = async () => {
+    if (editingId === null) return;
+    const name = editForm.name.trim();
+    if (!name) { cancelEdit(); return; }
+    try {
+      const updated = await invoke<TagDto[]>("update_tag", {
+        tag_id: editingId,
+        name,
+        color: editForm.color,
+      });
+      setTags(updated);
+    } catch (err) {
+      console.error("update_tag failed:", err);
+    }
+    cancelEdit();
+  };
+
+  const handleCreateKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") submitCreate();
+    else if (e.key === "Escape") cancelCreate();
+  };
+
+  const handleEditKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") submitEdit();
+    else if (e.key === "Escape") cancelEdit();
+  };
 
   return (
-    <div className={styles.tagPills}>
-      {tags.map((tag) => (
-        <span
-          key={tag.id}
-          className={cx(styles.tagPill, nav.type === "tag" && nav.id === tag.id && styles.active)}
-          style={{ backgroundColor: tag.color + "33", color: tag.color }}
-          onClick={() => handleClick(tag.id)}
-          title={tag.name}
-        >
-          {tag.name}
-        </span>
-      ))}
-    </div>
+    <>
+      <div className={styles.sectionHeader}>
+        <span>Tags</span>
+        <button onClick={startCreate} title="New tag">+</button>
+      </div>
+
+      {tags.length === 0 && !creating && (
+        <p className={styles.emptyHint}>No tags</p>
+      )}
+
+      <div className={styles.tagPills}>
+        {tags.map((tag) => {
+          const isActive = nav.type === "tag" && nav.id === tag.id;
+          const isEditing = editingId === tag.id;
+
+          if (isEditing) {
+            return (
+              <div key={tag.id} className={styles.tagEditInline}>
+                <input
+                  type="color"
+                  className={styles.colorInput}
+                  value={editForm.color}
+                  onChange={(e) => setEditForm((f) => ({ ...f, color: e.target.value }))}
+                />
+                <input
+                  ref={editNameRef}
+                  className={styles.tagNameInput}
+                  value={editForm.name}
+                  onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))}
+                  onKeyDown={handleEditKeyDown}
+                  onBlur={submitEdit}
+                />
+              </div>
+            );
+          }
+
+          return (
+            <span
+              key={tag.id}
+              className={cx(styles.tagPill, isActive && styles.active)}
+              style={{ backgroundColor: tag.color + "33", color: tag.color }}
+              onClick={() => handleClick(tag.id)}
+            >
+              {tag.name}
+              <button
+                className={styles.tagEditBtn}
+                onClick={(e) => startEdit(e, tag)}
+                title="Edit tag"
+              >
+                ✎
+              </button>
+              <button
+                className={styles.tagDeleteBtn}
+                onClick={(e) => handleDelete(e, tag)}
+                title="Delete tag"
+              >
+                ×
+              </button>
+            </span>
+          );
+        })}
+      </div>
+
+      {creating && (
+        <div className={styles.tagCreateForm}>
+          <input
+            type="color"
+            className={styles.colorInput}
+            value={newForm.color}
+            onChange={(e) => setNewForm((f) => ({ ...f, color: e.target.value }))}
+          />
+          <input
+            ref={nameInputRef}
+            className={styles.tagNameInput}
+            value={newForm.name}
+            onChange={(e) => setNewForm((f) => ({ ...f, name: e.target.value }))}
+            onKeyDown={handleCreateKeyDown}
+            onBlur={submitCreate}
+            placeholder="Tag name…"
+          />
+        </div>
+      )}
+    </>
   );
 }
+
+// ─── SidebarFooter ───────────────────────────────────────────────────────────
 
 function SidebarFooter() {
   const handleAddDir = async () => {
@@ -158,6 +429,8 @@ function SidebarFooter() {
     </div>
   );
 }
+
+// ─── Sidebar ─────────────────────────────────────────────────────────────────
 
 export function Sidebar() {
   const nav = useSidebarStore((s) => s.nav);
@@ -192,16 +465,10 @@ export function Sidebar() {
         </div>
 
         <div className={styles.section}>
-          <div className={styles.sectionHeader}>
-            <span>Playlists</span>
-          </div>
           <PlaylistList />
         </div>
 
         <div className={styles.section}>
-          <div className={styles.sectionHeader}>
-            <span>Tags</span>
-          </div>
           <TagPills />
         </div>
       </nav>

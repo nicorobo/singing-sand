@@ -16,6 +16,33 @@
   top: 0;
   left: 0;
   width: 100%;
+
+  &.dropLine {
+    &::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: #89b4fa;
+      z-index: 1;
+      pointer-events: none;
+    }
+  }
+}
+
+.dragHandle {
+  color: $overlay0;
+  font-size: 14px;
+  cursor: grab;
+  flex-shrink: 0;
+  opacity: 0.5;
+  user-select: none;
+
+  &:hover {
+    opacity: 1;
+  }
 }
 
 .row {
@@ -152,9 +179,26 @@
   }
 }
 
-.expandedPlaylists {
+.playlistBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   font-size: 11px;
   color: $overlay1;
+  background: $surface0;
+  padding: 1px 6px;
+  border-radius: 8px;
+}
+
+.playlistRemoveBtn {
+  opacity: 0.5;
+  font-size: 12px;
+  line-height: 1;
+
+  &:hover {
+    opacity: 1;
+    color: $red;
+  }
 }
 
 .notes {
