@@ -32,23 +32,25 @@
 
 ---
 
-### Phase 3 — Core Rust backend (`src-tauri`) ⬜
+### Phase 3 — Core Rust backend (`src-tauri`) ✅
 *Goal: all Tauri commands and events compile; `art://` URI scheme registered.*
 
-- [ ] `src-tauri/src/state.rs` — `AppState` struct with all `Arc`/`Mutex` fields
-- [ ] `src-tauri/src/dtos.rs` — all serializable DTO types for IPC boundary
-- [ ] `src-tauri/src/events.rs` — `spawn_audio_event_forwarder` + `spawn_art_loader`
-- [ ] Register `art://localhost/{track_id}` async URI scheme in `lib.rs`
-- [ ] `commands/settings.rs` — `get_settings`, `update_waveform_setting`
-- [ ] `commands/library.rs` — `nav_all`, `nav_select_dir`, `nav_playlist`, `nav_tag`, `search_tracks`
-- [ ] `commands/directories.rs` — `add_directory` (rfd), `toggle_dir_expanded`, `remove_scanned_dir`
-- [ ] `commands/waveform.rs` — `get_waveform` → PNG via `ipc::Response`
-- [ ] `commands/transport.rs` — `play_track`, `play`, `pause`, `stop`, `seek`
-- [ ] `commands/tracks.rs` — `expand_track`, `remove_tag_from_expanded`, `save_notes`, `track_clicked`
-- [ ] `commands/tags.rs` — `create_tag`, `delete_tag`, `update_tag`, `toggle_tag_for_selection`
-- [ ] `commands/playlists.rs` — `create_playlist`, `add_to_playlist`, `remove_from_playlist`, `reorder_playlist_tracks`, `add_selected_to_playlist`
-- [ ] Wire all into `lib.rs`: `manage(state)`, URI scheme, `invoke_handler`
-- [ ] Verify: `cargo build -p singing-sand` compiles clean
+- [x] `src-tauri/src/state.rs` — `AppState` struct with all `Arc`/`Mutex` fields
+- [x] `src-tauri/src/dtos.rs` — all serializable DTO types for IPC boundary
+- [x] `src-tauri/src/events.rs` — `spawn_audio_event_forwarder`
+- [x] `src-tauri/src/analysis.rs` — `AnalysisQueue` with `AppHandle` (emits `waveform-ready`, `analysis-progress`)
+- [x] `src-tauri/src/settings.rs` — load/save waveform settings from SQLite
+- [x] Register `art://localhost/{track_id}` async URI scheme in `lib.rs`
+- [x] `commands/settings.rs` — `get_settings`, `update_waveform_setting`
+- [x] `commands/library.rs` — `nav_all`, `nav_select_dir`, `nav_playlist`, `nav_tag`, `search_tracks`
+- [x] `commands/directories.rs` — `add_directory` (rfd), `toggle_dir_expanded`, `remove_scanned_dir`
+- [x] `commands/waveform.rs` — `get_waveform` → PNG via `ipc::Response`
+- [x] `commands/transport.rs` — `play_track`, `play`, `pause`, `stop`, `seek`
+- [x] `commands/tracks.rs` — `expand_track`, `remove_tag_from_expanded`, `save_notes`, `track_clicked`
+- [x] `commands/tags.rs` — `create_tag`, `delete_tag`, `update_tag`, `toggle_tag_for_selection`
+- [x] `commands/playlists.rs` — `create_playlist`, `add_to_playlist`, `remove_from_playlist`, `reorder_playlist_tracks`, `add_selected_to_playlist`
+- [x] Wire all into `lib.rs`: `manage(state)`, URI scheme, `invoke_handler`
+- [x] Verify: `cargo build -p singing-sand` compiles clean
 
 ---
 
