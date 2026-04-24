@@ -69,15 +69,16 @@
 
 ---
 
-### Phase 5 — Transport and Waveform ⬜
+### Phase 5 — Transport and Waveform ✅
 *Goal: click-to-play, waveform display, seek, playhead animation, prev/next.*
 
-- [ ] `<Waveform>` — displays PNG from `get_waveform`; click → `seek(x/width)`; CSS playhead line
-- [ ] `<NowPlaying>` — `art://` album art, title/artist, Prev/Play-Pause/Next buttons
-- [ ] `<PlayerPanel>` — wraps both
-- [ ] Wire `position-changed` event → playhead position
-- [ ] Wire `waveform-ready` event → call `get_waveform(id, width, height)` → `<img>`
-- [ ] Prev/Next: resolve adjacent ID from `libraryStore.tracks` in frontend, call `play_track(id)`
+- [x] `<Waveform>` — displays PNG from `get_waveform`; click → `seek(x/width)`; CSS playhead line
+- [x] `<NowPlaying>` — `art://` album art, title/artist, Prev/Play-Pause/Next buttons
+- [x] `<PlayerPanel>` — wraps both
+- [x] Wire `position-changed` event → playhead position
+- [x] Wire `waveform-ready` event → call `get_waveform(id, width, height)` → `<img>`
+- [x] Prev/Next: resolve adjacent ID from `libraryStore.tracks` in frontend, call `play_track(id)`
+- [x] Wire `track-loaded` event → update playerStore (title/artist/duration/isPlaying)
 
 ---
 

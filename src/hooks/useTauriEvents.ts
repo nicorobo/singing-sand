@@ -9,6 +9,7 @@ export function useTauriEvents(onLibraryChanged: () => void) {
   const setPosition = usePlayerStore((s) => s.setPosition);
   const setDuration = usePlayerStore((s) => s.setDuration);
   const setIsPlaying = usePlayerStore((s) => s.setIsPlaying);
+  const setCurrentTrack = usePlayerStore((s) => s.setCurrentTrack);
   const setPendingAnalysisCount = useUiStore((s) => s.setPendingAnalysisCount);
   const setDirs = useSidebarStore((s) => s.setDirs);
   const setPlaylists = useSidebarStore((s) => s.setPlaylists);
@@ -25,6 +26,15 @@ export function useTauriEvents(onLibraryChanged: () => void) {
     listen<Record<string, never>>("track-finished", () => {
       setIsPlaying(false);
     }).then((fn) => unlisten.push(fn));
+
+    listen<{ track_id: number; duration: number; title: string; artist: string }>(
+      "track-loaded",
+      (e) => {
+        setCurrentTrack(e.payload.track_id, e.payload.title, e.payload.artist);
+        setDuration(e.payload.duration);
+        setIsPlaying(true);
+      }
+    ).then((fn) => unlisten.push(fn));
 
     listen<{ pending_count: number }>("analysis-progress", (e) => {
       setPendingAnalysisCount(e.payload.pending_count);
@@ -53,6 +63,6 @@ export function useTauriEvents(onLibraryChanged: () => void) {
     return () => {
       unlisten.forEach((fn) => fn());
     };
-  }, [setPosition, setDuration, setIsPlaying, setPendingAnalysisCount,
-      setDirs, setPlaylists, setTags, onLibraryChanged]);
+  }, [setPosition, setDuration, setIsPlaying, setCurrentTrack,
+      setPendingAnalysisCount, setDirs, setPlaylists, setTags, onLibraryChanged]);
 }

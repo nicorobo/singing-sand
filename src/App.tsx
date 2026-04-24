@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { SearchBar } from "./components/SearchBar/SearchBar";
 import { TrackList } from "./components/TrackList/TrackList";
+import { PlayerPanel } from "./components/PlayerPanel/PlayerPanel";
 import { useSidebarStore } from "./stores/sidebarStore";
 import { useNavigation } from "./hooks/useNavigation";
 import { useTauriEvents } from "./hooks/useTauriEvents";
@@ -36,6 +37,7 @@ export default function App() {
       <div className="main">
         <SearchBar />
         <TrackList />
+        <PlayerPanel />
       </div>
     </div>
   );
