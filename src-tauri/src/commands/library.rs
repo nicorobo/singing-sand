@@ -1,9 +1,38 @@
+use std::collections::HashSet;
+
 use tauri::State;
 
-use crate::{dtos::TrackDto, state::AppState};
+use crate::{
+    commands::directories::build_dir_tree,
+    dtos::{PlaylistDto, SidebarDataDto, TagDto, TrackDto},
+    state::AppState,
+};
 
 fn tracks_to_dtos(tracks: &[ss_core::Track]) -> Vec<TrackDto> {
     tracks.iter().map(TrackDto::from).collect()
+}
+
+#[tauri::command]
+pub async fn get_sidebar_data(state: State<'_, AppState>) -> Result<SidebarDataDto, String> {
+    let (playlists_res, tags_res, dirs_res, tracks_res) = tokio::join!(
+        state.db.list_playlists(),
+        state.db.list_tags(),
+        state.db.list_scanned_dirs(),
+        state.db.list_tracks(),
+    );
+    let playlists = playlists_res.unwrap_or_default().iter().map(PlaylistDto::from).collect();
+    let tags = tags_res.unwrap_or_default().iter().map(TagDto::from).collect();
+    let track_dirs: HashSet<String> = tracks_res
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|t| t.path.parent().map(|p| p.to_string_lossy().into_owned()))
+        .collect();
+    let dir_tree = {
+        let roots = dirs_res.unwrap_or_default();
+        let exp = state.expanded_dirs.lock().unwrap();
+        build_dir_tree(&roots, &track_dirs, &exp)
+    };
+    Ok(SidebarDataDto { playlists, tags, dir_tree })
 }
 
 #[tauri::command]

@@ -1,0 +1,223 @@
+@use '../../styles/variables' as *;
+
+.sidebar {
+  width: $sidebar-width;
+  min-width: $sidebar-width;
+  height: 100%;
+  background: $mantle;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid $surface0;
+}
+
+.nav {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 0;
+}
+
+.section {
+  margin-bottom: 4px;
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px 3px;
+  color: $overlay0;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+
+  button {
+    color: $overlay1;
+    font-size: 16px;
+    line-height: 1;
+    padding: 0 2px;
+    opacity: 0.7;
+
+    &:hover {
+      opacity: 1;
+      color: $text;
+    }
+  }
+}
+
+.navItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  cursor: pointer;
+  color: $subtext1;
+  font-size: 13px;
+  border-radius: 4px;
+  margin: 0 4px;
+
+  &:hover {
+    background: $surface0;
+    color: $text;
+  }
+
+  &.active {
+    background: $surface0;
+    color: $blue;
+  }
+}
+
+.dirItem {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px;
+  cursor: pointer;
+  color: $subtext0;
+  font-size: 12px;
+  border-radius: 4px;
+  margin: 0 4px;
+  gap: 4px;
+
+  &:hover {
+    background: $surface0;
+    color: $text;
+
+    .removeDir {
+      opacity: 1;
+    }
+  }
+
+  &.active {
+    background: $surface0;
+    color: $blue;
+  }
+}
+
+.dirToggle {
+  width: 16px;
+  flex-shrink: 0;
+  color: $overlay0;
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dirName {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.removeDir {
+  opacity: 0;
+  color: $overlay0;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  flex-shrink: 0;
+
+  &:hover {
+    color: $red;
+  }
+}
+
+.playlistItem {
+  display: flex;
+  align-items: center;
+  padding: 4px 12px;
+  cursor: pointer;
+  color: $subtext0;
+  font-size: 12px;
+  border-radius: 4px;
+  margin: 0 4px;
+
+  &:hover {
+    background: $surface0;
+    color: $text;
+  }
+
+  &.active {
+    background: $surface0;
+    color: $blue;
+  }
+}
+
+.tagPills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 12px;
+}
+
+.tagPill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0.75;
+  transition: opacity 0.1s;
+
+  &:hover {
+    opacity: 1;
+  }
+
+  &.active {
+    opacity: 1;
+    outline: 2px solid currentColor;
+    outline-offset: 1px;
+  }
+}
+
+.footer {
+  padding: 8px;
+  border-top: 1px solid $surface0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.addDirBtn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: $surface0;
+  color: $subtext1;
+  font-size: 12px;
+
+  &:hover {
+    background: $surface1;
+    color: $text;
+  }
+}
+
+.settingsBtn {
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: $overlay1;
+
+  &:hover {
+    background: $surface0;
+    color: $text;
+  }
+}
+
+.emptyHint {
+  padding: 6px 12px;
+  color: $overlay0;
+  font-size: 11px;
+  font-style: italic;
+}

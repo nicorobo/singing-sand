@@ -1,38 +1,21 @@
 import { create } from "zustand";
+import { DirTreeItemDto, PlaylistDto, TagDto } from "../types";
 
 export type NavItem =
   | { type: "all" }
-  | { type: "dir"; id: number }
+  | { type: "dir"; path: string }
   | { type: "playlist"; id: number }
   | { type: "tag"; id: number };
 
-export interface DirItem {
-  id: number;
-  path: string;
-  expanded: boolean;
-  children: DirItem[];
-}
-
-export interface Playlist {
-  id: number;
-  name: string;
-}
-
-export interface SidebarTag {
-  id: number;
-  name: string;
-  color: string;
-}
-
 interface SidebarState {
   nav: NavItem;
-  dirs: DirItem[];
-  playlists: Playlist[];
-  tags: SidebarTag[];
+  dirs: DirTreeItemDto[];
+  playlists: PlaylistDto[];
+  tags: TagDto[];
   setNav: (nav: NavItem) => void;
-  setDirs: (dirs: DirItem[]) => void;
-  setPlaylists: (playlists: Playlist[]) => void;
-  setTags: (tags: SidebarTag[]) => void;
+  setDirs: (dirs: DirTreeItemDto[]) => void;
+  setPlaylists: (playlists: PlaylistDto[]) => void;
+  setTags: (tags: TagDto[]) => void;
 }
 
 export const useSidebarStore = create<SidebarState>((set) => ({

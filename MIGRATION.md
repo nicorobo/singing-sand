@@ -54,17 +54,18 @@
 
 ---
 
-### Phase 4 — Library UI ⬜
+### Phase 4 — Library UI ✅
 *Goal: track list, sidebar navigation, and selection all work.*
 
-- [ ] `src/styles/` — `_variables.scss` (Catppuccin Mocha tokens), `_reset.scss`, `global.scss`
-- [ ] `src/types.ts` — all TypeScript interfaces mirroring DTOs
-- [ ] `<Sidebar>` + `<DirTree>` + `<PlaylistList>` + `<TagPills>` + `<SidebarFooter>`
-- [ ] `<SearchBar>` (debounced, calls `search_tracks`)
-- [ ] `<TrackList>` (virtualized with `@tanstack/react-virtual`) + `<TrackRow>` + `<ExpandedTrackRow>`
-- [ ] Wire nav clicks → `invoke(nav_all/nav_select_dir/…)` → `libraryStore.setTracks`
-- [ ] Wire album art: `<img src={`art://localhost/${id}`}>` per row
-- [ ] Wire `track_clicked` (plain/shift/meta selection), `expand_track`, `save_notes` (debounced)
+- [x] `src/styles/` — `_variables.scss` (Catppuccin Mocha tokens), `_reset.scss`, `global.scss`
+- [x] `src/types.ts` — all TypeScript interfaces mirroring DTOs
+- [x] `<Sidebar>` + `<DirTree>` + `<PlaylistList>` + `<TagPills>` + `<SidebarFooter>`
+- [x] `<SearchBar>` (debounced, calls `search_tracks`)
+- [x] `<TrackList>` (virtualized with `@tanstack/react-virtual`) + `<TrackRow>` + `<ExpandedTrackRow>`
+- [x] Wire nav clicks → `invoke(nav_all/nav_select_dir/…)` → `libraryStore.setTracks`
+- [x] Wire album art: `<img src={`art://localhost/${id}`}>` per row
+- [x] Wire `track_clicked` (plain/shift/meta selection), `expand_track`, `save_notes` (debounced)
+- [x] Added `get_sidebar_data` Tauri command for initial sidebar load
 
 ---
 

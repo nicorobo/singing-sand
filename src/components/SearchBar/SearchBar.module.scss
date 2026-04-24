@@ -1,0 +1,55 @@
+@use '../../styles/variables' as *;
+
+.wrapper {
+  padding: 6px 10px;
+  background: $mantle;
+  border-bottom: 1px solid $surface0;
+  flex-shrink: 0;
+}
+
+.input {
+  width: 100%;
+  height: $search-height - 12px;
+  background: $surface0;
+  border-radius: 6px;
+  padding: 0 10px 0 32px;
+  color: $text;
+  font-size: 13px;
+
+  &::placeholder {
+    color: $overlay0;
+  }
+
+  &:focus {
+    outline: 1px solid $surface1;
+  }
+}
+
+.inner {
+  position: relative;
+}
+
+.icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: $overlay0;
+  font-size: 13px;
+  pointer-events: none;
+}
+
+.clear {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: $overlay0;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px;
+
+  &:hover {
+    color: $text;
+  }
+}

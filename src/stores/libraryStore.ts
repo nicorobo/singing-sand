@@ -1,31 +1,17 @@
 import { create } from "zustand";
-
-export interface Track {
-  id: number;
-  title: string;
-  artist: string;
-  album: string;
-  duration: number;
-  bpm: number | null;
-  path: string;
-  tags: Tag[];
-}
-
-export interface Tag {
-  id: number;
-  name: string;
-  color: string;
-}
+import { SelectedTagDto, TrackDto } from "../types";
 
 interface LibraryState {
-  tracks: Track[];
+  tracks: TrackDto[];
   selectedIds: Set<number>;
   expandedId: number | null;
   searchQuery: string;
-  setTracks: (tracks: Track[]) => void;
+  tagItems: SelectedTagDto[];
+  setTracks: (tracks: TrackDto[]) => void;
   setSelectedIds: (ids: Set<number>) => void;
   setExpandedId: (id: number | null) => void;
   setSearchQuery: (q: string) => void;
+  setTagItems: (items: SelectedTagDto[]) => void;
 }
 
 export const useLibraryStore = create<LibraryState>((set) => ({
@@ -33,8 +19,10 @@ export const useLibraryStore = create<LibraryState>((set) => ({
   selectedIds: new Set(),
   expandedId: null,
   searchQuery: "",
+  tagItems: [],
   setTracks: (tracks) => set({ tracks }),
   setSelectedIds: (selectedIds) => set({ selectedIds }),
   setExpandedId: (expandedId) => set({ expandedId }),
   setSearchQuery: (searchQuery) => set({ searchQuery }),
+  setTagItems: (tagItems) => set({ tagItems }),
 }));
