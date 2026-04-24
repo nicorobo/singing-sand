@@ -82,48 +82,48 @@
 
 ---
 
-### Phase 6 — Playlists and Tags ⬜
+### Phase 6 — Playlists and Tags ✅
 *Goal: full CRUD for playlists and tags; selection-based tag assignment; drag-to-reorder.*
 
-- [ ] Playlist creation form in sidebar (inline input)
-- [ ] `add_to_playlist` via drag-to-sidebar-pill; `remove_from_playlist` (× in playlist nav)
-- [ ] `reorder_playlist_tracks` via drag-and-drop within track list (playlist nav only)
-- [ ] Tag assignment panel (visible when `selectedIds.size > 0`): solid/faded/empty pills, click toggles
-- [ ] Tag creation, editing (inline + color picker), deletion in sidebar
-- [ ] `<TagChip>` shared component
+- [x] Playlist creation form in sidebar (inline input)
+- [x] `add_to_playlist` via drag-to-sidebar-pill; `remove_from_playlist` (× in expanded row)
+- [x] `reorder_playlist_tracks` via drag-and-drop within track list (playlist nav only)
+- [x] Tag assignment panel (visible when `selectedIds.size > 0`): solid/faded/empty pills, click toggles
+- [x] Tag creation, editing (inline + color picker), deletion in sidebar
+- [x] `<TagChip>` shared component
 
 ---
 
-### Phase 7 — Analysis Queue + Settings Drawer ⬜
+### Phase 7 — Analysis Queue + Settings Drawer ✅
 *Goal: analysis progress overlay; live waveform settings.*
 
-- [ ] Port `AnalysisQueue` from `ss-app` into `src-tauri/src/analysis.rs`; replace Slint weak ref with `AppHandle`
-- [ ] `<AnalysisOverlay>` — bottom-right "Analyzing N tracks…" badge
-- [ ] `<SettingsDrawer>` — 10 waveform controls (sliders + selects); calls `update_waveform_setting`
-- [ ] Gear icon in `<SidebarFooter>` toggles `playerStore.settingsOpen`
-- [ ] Settings changes emit `waveform-ready` → waveform refreshes live
+- [x] `AnalysisQueue` already in `src-tauri/src/analysis.rs` with `AppHandle`
+- [x] `<AnalysisOverlay>` — bottom-right "Analyzing N tracks…" badge
+- [x] `<SettingsDrawer>` — 10 waveform controls (sliders + selects); calls `update_waveform_setting`
+- [x] Gear icon in `<SidebarFooter>` toggles `playerStore.settingsOpen`
+- [x] Settings changes emit `waveform-ready` → waveform refreshes live
 
 ---
 
-### Phase 8 — Drag-and-Drop + Polish ⬜
+### Phase 8 — Drag-and-Drop + Polish ✅
 *Goal: file/dir drop, keyboard shortcuts, waveform resize, duplicate dir modal.*
 
-- [ ] `getCurrentWebview().onDragDropEvent` → `add_directory(path)` (bypasses rfd)
-- [ ] Duplicate directory confirmation modal (replaces Slint dialog)
-- [ ] Keyboard shortcuts: `Space` = play/pause, `←`/`→` = seek via `useEffect` listener
-- [ ] `ResizeObserver` on waveform container → re-fetch PNG on resize
-- [ ] Final SCSS polish — spacing, typography, hover states
+- [x] `getCurrentWebview().onDragDropEvent` → `add_directory_path(path)` (bypasses rfd)
+- [x] Duplicate directory confirmation modal (replaces alert())
+- [x] Keyboard shortcuts: `Space` = play/pause, `←`/`→` = seek ±5s via `useEffect` listener
+- [x] `ResizeObserver` on waveform container → re-fetch PNG on resize
+- [x] SCSS polish — antialiased fonts, button reset, consistent spacing
 
 ---
 
-### Phase 9 — Delete `ss-app` + Final Cleanup ⬜
+### Phase 9 — Delete `ss-app` + Final Cleanup ✅
 *Goal: zero Slint code in the workspace.*
 
-- [ ] Remove `crates/ss-app/` from filesystem
-- [ ] Remove `slint` and `slint-build` from workspace `Cargo.toml` entirely
-- [ ] `cargo build` + `cargo clippy` clean with no Slint anywhere
-- [ ] `bun run build` + `cargo tauri build` produce clean production bundle
-- [ ] Confirm: no `.slint` files, no `slint` in any `Cargo.toml`
+- [x] Remove `crates/ss-app/` from filesystem
+- [x] Remove `slint` from workspace `Cargo.toml` entirely
+- [x] `cargo build` + `cargo clippy` clean with no Slint anywhere
+- [x] `bun run build` produces clean production bundle
+- [x] Confirmed: no `.slint` files, no `slint` in any `Cargo.toml`
 
 ---
 
