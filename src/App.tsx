@@ -7,9 +7,11 @@ import { PlayerPanel } from "./components/PlayerPanel/PlayerPanel";
 import { TagAssignmentPanel } from "./components/TagAssignmentPanel/TagAssignmentPanel";
 import { AnalysisOverlay } from "./components/AnalysisOverlay/AnalysisOverlay";
 import { SettingsDrawer } from "./components/SettingsDrawer/SettingsDrawer";
+import { DuplicateModal } from "./components/DuplicateModal/DuplicateModal";
 import { useSidebarStore } from "./stores/sidebarStore";
 import { useNavigation } from "./hooks/useNavigation";
 import { useTauriEvents } from "./hooks/useTauriEvents";
+import { useAppInteractions } from "./hooks/useAppInteractions";
 import { SidebarDataDto } from "./types";
 
 export default function App() {
@@ -23,6 +25,7 @@ export default function App() {
   }, [fetchTracks]);
 
   useTauriEvents(onLibraryChanged);
+  useAppInteractions();
 
   useEffect(() => {
     invoke<SidebarDataDto>("get_sidebar_data").then((data) => {
@@ -45,6 +48,7 @@ export default function App() {
         <AnalysisOverlay />
         <SettingsDrawer />
       </div>
+      <DuplicateModal />
     </div>
   );
 }

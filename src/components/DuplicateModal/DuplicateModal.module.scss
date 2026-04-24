@@ -1,0 +1,52 @@
+@use '../../styles/variables' as *;
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal {
+  background: $surface0;
+  border: 1px solid $surface1;
+  border-radius: 10px;
+  padding: 24px 28px;
+  max-width: 340px;
+  width: 90%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.icon {
+  font-size: 28px;
+  color: $yellow;
+}
+
+.message {
+  font-size: 13px;
+  color: $text;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.okBtn {
+  margin-top: 4px;
+  padding: 6px 24px;
+  background: $blue;
+  color: $crust;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  transition: opacity 0.1s;
+
+  &:hover {
+    opacity: 0.85;
+  }
+}

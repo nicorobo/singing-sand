@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { usePlayerStore } from "../../stores/playerStore";
@@ -7,11 +7,12 @@ import styles from "./PlayerPanel.module.scss";
 export function Waveform() {
   const position = usePlayerStore((s) => s.position);
   const duration = usePlayerStore((s) => s.duration);
+  const currentTrackId = usePlayerStore((s) => s.currentTrackId);
   const containerRef = useRef<HTMLDivElement>(null);
   const blobUrlRef = useRef<string | null>(null);
   const [waveformUrl, setWaveformUrl] = useState<string | null>(null);
 
-  const fetchWaveform = async (trackId: number) => {
+  const fetchWaveform = useCallback(async (trackId: number) => {
     const el = containerRef.current;
     if (!el) return;
     const { width, height } = el.getBoundingClientRect();
@@ -28,8 +29,9 @@ export function Waveform() {
     } catch (e) {
       console.error("get_waveform failed:", e);
     }
-  };
+  }, []);
 
+  // Listen for waveform-ready events
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     listen<{ track_id: number }>("waveform-ready", (e) => {
@@ -39,9 +41,27 @@ export function Waveform() {
       unlisten?.();
       if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
     };
-  // fetchWaveform intentionally omitted — it reads containerRef which is stable
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [fetchWaveform]);
+
+  // Re-fetch on container resize (debounced)
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const observer = new ResizeObserver(() => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (currentTrackId !== null) {
+          fetchWaveform(currentTrackId);
+        }
+      }, 150);
+    });
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      if (timer) clearTimeout(timer);
+    };
+  }, [currentTrackId, fetchWaveform]);
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();

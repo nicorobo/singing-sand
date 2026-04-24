@@ -19,7 +19,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use analysis::AnalysisQueue;
 use commands::{
-    directories::{add_directory, emit_dir_tree, remove_scanned_dir, toggle_dir_expanded},
+    directories::{add_directory, add_directory_path, emit_dir_tree, remove_scanned_dir, toggle_dir_expanded},
     library::{get_sidebar_data, nav_all, nav_playlist, nav_select_dir, nav_tag, search_tracks},
     playlists::{add_selected_to_playlist, add_to_playlist, create_playlist, delete_playlist, remove_from_playlist, reorder_playlist_tracks},
     settings::{get_settings, update_waveform_setting},
@@ -167,6 +167,7 @@ pub fn run() {
             nav_tag,
             search_tracks,
             add_directory,
+            add_directory_path,
             toggle_dir_expanded,
             remove_scanned_dir,
             get_waveform,

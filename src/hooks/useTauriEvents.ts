@@ -11,6 +11,7 @@ export function useTauriEvents(onLibraryChanged: () => void) {
   const setIsPlaying = usePlayerStore((s) => s.setIsPlaying);
   const setCurrentTrack = usePlayerStore((s) => s.setCurrentTrack);
   const setPendingAnalysisCount = useUiStore((s) => s.setPendingAnalysisCount);
+  const setDuplicateMessage = useUiStore((s) => s.setDuplicateMessage);
   const setDirs = useSidebarStore((s) => s.setDirs);
   const setPlaylists = useSidebarStore((s) => s.setPlaylists);
   const setTags = useSidebarStore((s) => s.setTags);
@@ -57,12 +58,12 @@ export function useTauriEvents(onLibraryChanged: () => void) {
     }).then((fn) => unlisten.push(fn));
 
     listen<{ message: string }>("dir-duplicate", (e) => {
-      alert(e.payload.message);
+      setDuplicateMessage(e.payload.message);
     }).then((fn) => unlisten.push(fn));
 
     return () => {
       unlisten.forEach((fn) => fn());
     };
   }, [setPosition, setDuration, setIsPlaying, setCurrentTrack,
-      setPendingAnalysisCount, setDirs, setPlaylists, setTags, onLibraryChanged]);
+      setPendingAnalysisCount, setDuplicateMessage, setDirs, setPlaylists, setTags, onLibraryChanged]);
 }

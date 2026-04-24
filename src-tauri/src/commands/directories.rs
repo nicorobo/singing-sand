@@ -146,6 +146,55 @@ pub async fn add_directory(
 }
 
 #[tauri::command]
+pub async fn add_directory_path(
+    path: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let path = PathBuf::from(&path);
+    if !path.is_dir() {
+        return Ok(());
+    }
+    let path_str = path.to_string_lossy().to_string();
+
+    let existing = state.db.list_scanned_dirs().await.unwrap_or_default();
+    if let Some(msg) = check_duplicate_dir(&path_str, &existing) {
+        app.emit("dir-duplicate", serde_json::json!({ "message": msg })).ok();
+        return Ok(());
+    }
+
+    if let Err(e) = state.db.record_scanned_dir(&path).await {
+        tracing::warn!("record_scanned_dir failed for {path_str}: {e}");
+    }
+
+    if let Ok(mut fw) = state.file_watcher.lock() {
+        if let Err(e) = fw.watch(&path) {
+            tracing::warn!("watch failed for {path_str}: {e}");
+        }
+    }
+
+    emit_dir_tree(&state.db, &state.expanded_dirs, &app).await;
+
+    let db2 = Arc::clone(&state.db);
+    let aq = Arc::clone(&state.analysis_queue);
+    let expanded = Arc::clone(&state.expanded_dirs);
+    let app2 = app.clone();
+    tokio::spawn(async move {
+        let scanner = Scanner::new(Arc::clone(&db2));
+        match scanner.scan_dir(&path).await {
+            Ok(stats) => {
+                tracing::info!("added dir {path_str} — {} upserted, {} errors", stats.upserted, stats.errors);
+                aq.enqueue(stats.upserted_tracks);
+            }
+            Err(e) => tracing::warn!("scan_dir failed for {path_str}: {e}"),
+        }
+        emit_dir_tree(&db2, &expanded, &app2).await;
+        app2.emit("library-changed", serde_json::json!({})).ok();
+    });
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn toggle_dir_expanded(
     path: String,
     app: AppHandle,
