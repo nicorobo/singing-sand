@@ -2,6 +2,7 @@ import React, { useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSidebarStore, NavItem } from "../../stores/sidebarStore";
 import { useLibraryStore } from "../../stores/libraryStore";
+import { usePlayerStore } from "../../stores/playerStore";
 import { DirTreeItemDto, PlaylistDto, TagDto } from "../../types";
 import { useNavigation } from "../../hooks/useNavigation";
 import styles from "./Sidebar.module.scss";
@@ -413,6 +414,9 @@ function TagPills() {
 // ─── SidebarFooter ───────────────────────────────────────────────────────────
 
 function SidebarFooter() {
+  const settingsOpen = usePlayerStore((s) => s.settingsOpen);
+  const setSettingsOpen = usePlayerStore((s) => s.setSettingsOpen);
+
   const handleAddDir = async () => {
     await invoke("add_directory");
   };
@@ -423,7 +427,12 @@ function SidebarFooter() {
         <span>⊕</span>
         <span>Add Directory</span>
       </button>
-      <button className={styles.settingsBtn} title="Settings (coming soon)">
+      <button
+        className={styles.settingsBtn}
+        title={settingsOpen ? "Close settings" : "Waveform settings"}
+        onClick={() => setSettingsOpen(!settingsOpen)}
+        style={settingsOpen ? { color: "var(--blue, #89b4fa)", background: "var(--surface0, #313244)" } : undefined}
+      >
         ⚙
       </button>
     </div>

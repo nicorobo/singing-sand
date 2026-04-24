@@ -1,4 +1,4 @@
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use crate::{
     dtos::WaveformSettingsDto,
@@ -28,6 +28,7 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<WaveformSettings
 pub async fn update_waveform_setting(
     key: String,
     value: String,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     {
@@ -58,6 +59,12 @@ pub async fn update_waveform_setting(
             _ => return Err(format!("unknown setting key: {key}")),
         }
     }
+
+    // Emit waveform-ready so the frontend re-renders the waveform with new settings.
+    if let Some(track_id) = *state.current_track_id.lock().unwrap() {
+        app.emit("waveform-ready", serde_json::json!({ "track_id": track_id })).ok();
+    }
+
     // Persist async
     let db = std::sync::Arc::clone(&state.db);
     let s = state.render_settings.lock().unwrap().clone();

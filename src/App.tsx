@@ -5,6 +5,8 @@ import { SearchBar } from "./components/SearchBar/SearchBar";
 import { TrackList } from "./components/TrackList/TrackList";
 import { PlayerPanel } from "./components/PlayerPanel/PlayerPanel";
 import { TagAssignmentPanel } from "./components/TagAssignmentPanel/TagAssignmentPanel";
+import { AnalysisOverlay } from "./components/AnalysisOverlay/AnalysisOverlay";
+import { SettingsDrawer } from "./components/SettingsDrawer/SettingsDrawer";
 import { useSidebarStore } from "./stores/sidebarStore";
 import { useNavigation } from "./hooks/useNavigation";
 import { useTauriEvents } from "./hooks/useTauriEvents";
@@ -40,6 +42,8 @@ export default function App() {
         <TrackList />
         <TagAssignmentPanel />
         <PlayerPanel />
+        <AnalysisOverlay />
+        <SettingsDrawer />
       </div>
     </div>
   );
