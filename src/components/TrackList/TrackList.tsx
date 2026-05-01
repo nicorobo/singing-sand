@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useRef } from "react";
+import { useDraggable } from "@dnd-kit/core";
+import { SortableContext, verticalListSortingStrategy, useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useLibraryStore } from "../../stores/libraryStore";
 import { useSidebarStore } from "../../stores/sidebarStore";
@@ -7,9 +9,61 @@ import { TrackDto } from "../../types";
 import { TrackRow } from "./TrackRow";
 import styles from "./TrackList.module.scss";
 
-function cx(...classes: (string | false | undefined)[]) {
-  return classes.filter(Boolean).join(" ");
+// ─── Draggable row (library / all-tracks view) ────────────────────────────────
+
+interface RowProps {
+  track: TrackDto;
 }
+
+function DraggableRow({ track }: RowProps) {
+  const selectedIds = useLibraryStore((s) => s.selectedIds);
+  const dragIds = selectedIds.has(track.id) ? Array.from(selectedIds) : [track.id];
+
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: `track-${track.id}`,
+    data: { type: "track", trackIds: dragIds, trackTitle: track.title || track.artist },
+  });
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ opacity: isDragging ? 0.4 : 1 }}
+      {...attributes}
+      {...listeners}
+    >
+      <TrackRow track={track} />
+    </div>
+  );
+}
+
+// ─── Sortable row (playlist view) ─────────────────────────────────────────────
+
+function SortableRow({ track }: RowProps) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: track.id,
+    data: { type: "sortable", trackId: track.id, trackTitle: track.title || track.artist },
+  });
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+        opacity: isDragging ? 0 : 1,
+      }}
+    >
+      <TrackRow
+        track={track}
+        isReorderable
+        dragHandleListeners={listeners}
+        dragHandleAttributes={attributes}
+      />
+    </div>
+  );
+}
+
+// ─── TrackList ────────────────────────────────────────────────────────────────
 
 export function TrackList() {
   const tracks = useLibraryStore((s) => s.tracks);
@@ -17,20 +71,12 @@ export function TrackList() {
   const nav = useSidebarStore((s) => s.nav);
   const parentRef = useRef<HTMLDivElement>(null);
 
-  // Local ordered tracks for playlist reorder (mirrors store tracks, updated optimistically)
-  const [localTracks, setLocalTracks] = useState<TrackDto[]>(tracks);
-  useEffect(() => { setLocalTracks(tracks); }, [tracks]);
-
   const isPlaylistNav = nav.type === "playlist";
-  const dragSourceIdx = useRef<number | null>(null);
-  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
-
-  const displayTracks = isPlaylistNav ? localTracks : tracks;
 
   const rowVirtualizer = useVirtualizer({
-    count: displayTracks.length,
+    count: tracks.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: (i) => (displayTracks[i]?.id === expandedId ? 240 : 40),
+    estimateSize: (i) => (tracks[i]?.id === expandedId ? 240 : 40),
     measureElement:
       typeof window !== "undefined"
         ? (el) => el.getBoundingClientRect().height
@@ -38,59 +84,7 @@ export function TrackList() {
     overscan: 8,
   });
 
-  const handleDragStart = (e: React.DragEvent, track: TrackDto, index: number) => {
-    e.dataTransfer.setData("track-id", String(track.id));
-    e.dataTransfer.effectAllowed = isPlaylistNav ? "move" : "copy";
-    if (isPlaylistNav) {
-      e.dataTransfer.setData("row-index", String(index));
-      dragSourceIdx.current = index;
-    }
-  };
-
-  const handleDragOver = (e: React.DragEvent, index: number) => {
-    if (!isPlaylistNav) return;
-    if (!e.dataTransfer.types.includes("row-index")) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    setDragOverIdx(index);
-  };
-
-  const handleDragLeave = () => {
-    setDragOverIdx(null);
-  };
-
-  const handleDrop = async (e: React.DragEvent, toIndex: number) => {
-    e.preventDefault();
-    setDragOverIdx(null);
-    if (!isPlaylistNav || nav.type !== "playlist") return;
-    const fromIndex = dragSourceIdx.current;
-    dragSourceIdx.current = null;
-    if (fromIndex === null || fromIndex === toIndex) return;
-
-    // Reorder locally
-    const next = [...localTracks];
-    const [moved] = next.splice(fromIndex, 1);
-    next.splice(toIndex, 0, moved);
-    setLocalTracks(next);
-
-    // Persist to backend
-    try {
-      await invoke("reorder_playlist_tracks", {
-        playlist_id: nav.id,
-        new_order: next.map((t) => t.id),
-      });
-    } catch (err) {
-      console.error("reorder_playlist_tracks failed:", err);
-      setLocalTracks(tracks); // revert
-    }
-  };
-
-  const handleDragEnd = () => {
-    dragSourceIdx.current = null;
-    setDragOverIdx(null);
-  };
-
-  if (displayTracks.length === 0) {
+  if (tracks.length === 0) {
     return (
       <div className={styles.container}>
         <div className={styles.empty}>
@@ -106,31 +100,44 @@ export function TrackList() {
         className={styles.inner}
         style={{ height: rowVirtualizer.getTotalSize() }}
       >
-        {rowVirtualizer.getVirtualItems().map((vItem) => {
-          const track = displayTracks[vItem.index];
-          const idx = vItem.index;
-          return (
-            <div
-              key={vItem.key}
-              data-index={vItem.index}
-              ref={rowVirtualizer.measureElement}
-              className={cx(
-                styles.virtualItem,
-                dragOverIdx === idx && styles.dropLine,
-              )}
-              style={{ transform: `translateY(${vItem.start}px)` }}
-              draggable
-              onDragStart={(e) => handleDragStart(e, track, idx)}
-              onDragOver={(e) => handleDragOver(e, idx)}
-              onDragLeave={handleDragLeave}
-              onDrop={(e) => handleDrop(e, idx)}
-              onDragEnd={handleDragEnd}
-            >
-              <TrackRow track={track} isReorderable={isPlaylistNav} />
-            </div>
-          );
-        })}
+        {isPlaylistNav ? (
+          <SortableContext
+            items={tracks.map((t) => t.id)}
+            strategy={verticalListSortingStrategy}
+          >
+            {rowVirtualizer.getVirtualItems().map((vItem) => {
+              const track = tracks[vItem.index];
+              return (
+                <div
+                  key={vItem.key}
+                  data-index={vItem.index}
+                  ref={rowVirtualizer.measureElement}
+                  className={styles.virtualItem}
+                  style={{ transform: `translateY(${vItem.start}px)` }}
+                >
+                  <SortableRow track={track} />
+                </div>
+              );
+            })}
+          </SortableContext>
+        ) : (
+          rowVirtualizer.getVirtualItems().map((vItem) => {
+            const track = tracks[vItem.index];
+            return (
+              <div
+                key={vItem.key}
+                data-index={vItem.index}
+                ref={rowVirtualizer.measureElement}
+                className={styles.virtualItem}
+                style={{ transform: `translateY(${vItem.start}px)` }}
+              >
+                <DraggableRow track={track} />
+              </div>
+            );
+          })
+        )}
       </div>
     </div>
   );
 }
+

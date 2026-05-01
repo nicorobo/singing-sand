@@ -4,7 +4,7 @@ use tauri::State;
 
 use crate::{
     commands::directories::build_dir_tree,
-    dtos::{PlaylistDto, SidebarDataDto, TagDto, TrackDto},
+    dtos::{PlaylistDto, PlaylistGroupDto, SidebarDataDto, TagDto, TrackDto},
     state::AppState,
 };
 
@@ -14,13 +14,15 @@ fn tracks_to_dtos(tracks: &[ss_core::Track]) -> Vec<TrackDto> {
 
 #[tauri::command]
 pub async fn get_sidebar_data(state: State<'_, AppState>) -> Result<SidebarDataDto, String> {
-    let (playlists_res, tags_res, dirs_res, tracks_res) = tokio::join!(
+    let (playlists_res, groups_res, tags_res, dirs_res, tracks_res) = tokio::join!(
         state.db.list_playlists(),
+        state.db.list_playlist_groups(),
         state.db.list_tags(),
         state.db.list_scanned_dirs(),
         state.db.list_tracks(),
     );
     let playlists = playlists_res.unwrap_or_default().iter().map(PlaylistDto::from).collect();
+    let groups = groups_res.unwrap_or_default().iter().map(PlaylistGroupDto::from).collect();
     let tags = tags_res.unwrap_or_default().iter().map(TagDto::from).collect();
     let track_dirs: HashSet<String> = tracks_res
         .unwrap_or_default()
@@ -32,7 +34,7 @@ pub async fn get_sidebar_data(state: State<'_, AppState>) -> Result<SidebarDataD
         let exp = state.expanded_dirs.lock().unwrap();
         build_dir_tree(&roots, &track_dirs, &exp)
     };
-    Ok(SidebarDataDto { playlists, tags, dir_tree })
+    Ok(SidebarDataDto { playlists, groups, tags, dir_tree })
 }
 
 #[tauri::command]
@@ -78,6 +80,7 @@ pub async fn search_tracks(
             1 => db.list_tracks_in_dir(&nav_dir).await,
             2 => db.list_tracks_in_playlist(nav_id).await,
             3 => db.list_tracks_with_tag(nav_id).await,
+            4 => db.list_tracks_in_group(nav_id).await,
             _ => Ok(vec![]),
         }
     } else {
@@ -86,6 +89,7 @@ pub async fn search_tracks(
             1 => db.list_tracks_in_dir_filtered(&nav_dir, &query).await,
             2 => db.list_tracks_in_playlist_filtered(nav_id, &query).await,
             3 => db.list_tracks_with_tag_filtered(nav_id, &query).await,
+            4 => db.list_tracks_in_group_filtered(nav_id, &query).await,
             _ => Ok(vec![]),
         }
     }

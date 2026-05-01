@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use ss_core::Track;
-use ss_db::{Playlist, Tag};
+use ss_db::{Playlist, PlaylistGroup, Tag};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackDto {
@@ -29,12 +29,34 @@ impl From<&Track> for TrackDto {
 pub struct PlaylistDto {
     pub id: i64,
     pub name: String,
+    pub group_id: Option<i64>,
+    pub position: f64,
 }
 
 impl From<&Playlist> for PlaylistDto {
     fn from(p: &Playlist) -> Self {
-        Self { id: p.id, name: p.name.clone() }
+        Self { id: p.id, name: p.name.clone(), group_id: p.group_id, position: p.position }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaylistGroupDto {
+    pub id: i64,
+    pub name: String,
+    pub parent_id: Option<i64>,
+    pub position: f64,
+}
+
+impl From<&PlaylistGroup> for PlaylistGroupDto {
+    fn from(g: &PlaylistGroup) -> Self {
+        Self { id: g.id, name: g.name.clone(), parent_id: g.parent_id, position: g.position }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SidebarPlaylistDataDto {
+    pub playlists: Vec<PlaylistDto>,
+    pub groups: Vec<PlaylistGroupDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,6 +135,7 @@ pub struct SelectionChangedDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SidebarDataDto {
     pub playlists: Vec<PlaylistDto>,
+    pub groups: Vec<PlaylistGroupDto>,
     pub tags: Vec<TagDto>,
     pub dir_tree: Vec<DirTreeItemDto>,
 }

@@ -25,7 +25,7 @@ export function NowPlaying() {
     if (idx < 0 || idx >= tracks.length) return;
     const track = tracks[idx];
     try {
-      await invoke("play_track", { track_id: track.id });
+      await invoke("play_track", { trackId: track.id });
       setCurrentTrack(track.id, track.title, track.artist);
       setIsPlaying(true);
     } catch (e) {

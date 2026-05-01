@@ -1,4 +1,6 @@
 import React, { useState } from "react";
+import type { DraggableAttributes } from "@dnd-kit/core";
+import type { SyntheticListenerMap } from "@dnd-kit/core/dist/hooks/utilities";
 import { invoke } from "@tauri-apps/api/core";
 import { TrackDto, SelectionChangedDto } from "../../types";
 import { useLibraryStore } from "../../stores/libraryStore";
@@ -13,9 +15,11 @@ function cx(...classes: (string | false | undefined)[]) {
 interface Props {
   track: TrackDto;
   isReorderable?: boolean;
+  dragHandleListeners?: SyntheticListenerMap;
+  dragHandleAttributes?: DraggableAttributes;
 }
 
-export function TrackRow({ track, isReorderable }: Props) {
+export function TrackRow({ track, isReorderable, dragHandleListeners, dragHandleAttributes }: Props) {
   const selectedIds = useLibraryStore((s) => s.selectedIds);
   const setSelectedIds = useLibraryStore((s) => s.setSelectedIds);
   const setTagItems = useLibraryStore((s) => s.setTagItems);
@@ -46,7 +50,7 @@ export function TrackRow({ track, isReorderable }: Props) {
   const handleDoubleClick = async (e: React.MouseEvent) => {
     e.preventDefault();
     try {
-      await invoke("play_track", { track_id: track.id });
+      await invoke("play_track", { trackId: track.id });
       setCurrentTrackId(track.id);
       setIsPlaying(true);
     } catch (err) {
@@ -75,7 +79,12 @@ export function TrackRow({ track, isReorderable }: Props) {
         onDoubleClick={handleDoubleClick}
       >
         {isReorderable && (
-          <span className={styles.dragHandle} title="Drag to reorder">⠿</span>
+          <span
+            className={styles.dragHandle}
+            title="Drag to reorder"
+            {...dragHandleAttributes}
+            {...dragHandleListeners}
+          >⠿</span>
         )}
 
         {!artError ? (

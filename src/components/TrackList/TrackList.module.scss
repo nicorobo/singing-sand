@@ -229,3 +229,17 @@
   color: $overlay0;
   font-size: 13px;
 }
+
+.dragGhost {
+  position: fixed;
+  top: -100px;
+  left: -100px;
+  background: #89b4fa;
+  color: #1e1e2e;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 12px;
+  pointer-events: none;
+  white-space: nowrap;
+}

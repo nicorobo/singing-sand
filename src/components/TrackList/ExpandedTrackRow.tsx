@@ -20,7 +20,7 @@ export function ExpandedTrackRow({ trackId, durationSecs }: Props) {
   const debounceRef = useRef<number | null>(null);
 
   useEffect(() => {
-    invoke<ExpandedTrackDto>("expand_track", { track_id: trackId }).then((d) => {
+    invoke<ExpandedTrackDto>("expand_track", { trackId }).then((d) => {
       setData(d);
       setNotes(d.notes);
     });
@@ -31,14 +31,14 @@ export function ExpandedTrackRow({ trackId, durationSecs }: Props) {
 
   const handleTagRemove = async (tagId: number) => {
     const tags = await invoke<ExpandedTrackDto["tags"]>("remove_tag_from_expanded", {
-      track_id: trackId,
-      tag_id: tagId,
+      trackId,
+      tagId,
     });
     setData((d) => (d ? { ...d, tags } : d));
   };
 
   const handlePlaylistRemove = async (playlistId: number) => {
-    await invoke("remove_from_playlist", { playlist_id: playlistId, track_id: trackId });
+    await invoke("remove_from_playlist", { playlistId, trackId });
     setData((d) =>
       d ? { ...d, playlists: d.playlists.filter((p) => p.id !== playlistId) } : d
     );
@@ -49,7 +49,7 @@ export function ExpandedTrackRow({ trackId, durationSecs }: Props) {
     setNotes(text);
     if (debounceRef.current !== null) clearTimeout(debounceRef.current);
     debounceRef.current = window.setTimeout(() => {
-      invoke("save_notes", { track_id: trackId, text });
+      invoke("save_notes", { trackId, text });
     }, 600);
   };
 

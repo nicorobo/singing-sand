@@ -10,6 +10,20 @@ export interface TrackDto {
 export interface PlaylistDto {
   id: number;
   name: string;
+  group_id: number | null;
+  position: number;
+}
+
+export interface PlaylistGroupDto {
+  id: number;
+  name: string;
+  parent_id: number | null;
+  position: number;
+}
+
+export interface SidebarPlaylistDataDto {
+  playlists: PlaylistDto[];
+  groups: PlaylistGroupDto[];
 }
 
 export interface TagDto {
@@ -73,6 +87,7 @@ export interface WaveformSettingsDto {
 
 export interface SidebarDataDto {
   playlists: PlaylistDto[];
+  groups: PlaylistGroupDto[];
   tags: TagDto[];
   dir_tree: DirTreeItemDto[];
 }

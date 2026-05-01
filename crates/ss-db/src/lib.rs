@@ -9,6 +9,16 @@ use ss_core::Track;
 pub struct Playlist {
     pub id: i64,
     pub name: String,
+    pub group_id: Option<i64>,
+    pub position: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlaylistGroup {
+    pub id: i64,
+    pub name: String,
+    pub parent_id: Option<i64>,
+    pub position: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +41,26 @@ pub struct NewTrack {
 /// Database handle wrapping a SQLite connection pool.
 pub struct Db {
     pool: SqlitePool,
+}
+
+fn row_to_playlist(row: &sqlx::sqlite::SqliteRow) -> Playlist {
+    Playlist {
+        id:       row.get("id"),
+        name:     row.get("name"),
+        group_id: row.get("group_id"),
+        position: row.get::<f64, _>("position"),
+    }
+}
+
+/// Compute a fractional position that places a new item before the sibling at
+/// `before_index` (0-based, sorted ascending). Appends if index >= len.
+fn fractional_position(sorted_positions: &[f64], before_index: usize) -> f64 {
+    match (sorted_positions.get(before_index.saturating_sub(1)), sorted_positions.get(before_index)) {
+        (None, None)         => 0.0,                                  // empty list
+        (None, Some(&right)) => right - 1.0,                          // insert before first
+        (Some(&left), None)  => left + 1.0,                           // append after last
+        (Some(&left), Some(&right)) => (left + right) / 2.0,          // between two items
+    }
 }
 
 fn row_to_track(row: &sqlx::sqlite::SqliteRow) -> Track {
@@ -438,24 +468,69 @@ impl Db {
 
     // ── Playlists ─────────────────────────────────────────────────────────────
 
-    /// Create a new playlist. Returns the created playlist.
-    pub async fn insert_playlist(&self, name: &str) -> Result<Playlist> {
-        let id: i64 = sqlx::query("INSERT INTO playlists (name) VALUES (?)")
+    /// Create a new playlist, appended at the end of its group (or root).
+    pub async fn insert_playlist(&self, name: &str, group_id: Option<i64>) -> Result<Playlist> {
+        let position = self.next_playlist_position(group_id).await?;
+        let id: i64 = sqlx::query("INSERT INTO playlists (name, group_id, position) VALUES (?, ?, ?)")
             .bind(name)
+            .bind(group_id)
+            .bind(position)
             .execute(&self.pool)
             .await
             .context("insert_playlist failed")?
             .last_insert_rowid();
-        Ok(Playlist { id, name: name.to_owned() })
+        Ok(Playlist { id, name: name.to_owned(), group_id, position })
     }
 
-    /// Return all playlists ordered by name.
+    /// Return the next append position for a playlist (max sibling position + 1.0).
+    async fn next_playlist_position(&self, group_id: Option<i64>) -> Result<f64> {
+        let row = if let Some(gid) = group_id {
+            sqlx::query("SELECT MAX(position) as m FROM playlists WHERE group_id = ?")
+                .bind(gid)
+                .fetch_one(&self.pool)
+                .await?
+        } else {
+            sqlx::query("SELECT MAX(position) as m FROM playlists WHERE group_id IS NULL")
+                .fetch_one(&self.pool)
+                .await?
+        };
+        Ok(row.get::<Option<f64>, _>("m").unwrap_or(-1.0) + 1.0)
+    }
+
+    /// Return the next append position for a group (max sibling position + 1.0).
+    async fn next_group_position(&self, parent_id: Option<i64>) -> Result<f64> {
+        let row = if let Some(pid) = parent_id {
+            sqlx::query("SELECT MAX(position) as m FROM playlist_groups WHERE parent_id = ?")
+                .bind(pid)
+                .fetch_one(&self.pool)
+                .await?
+        } else {
+            sqlx::query("SELECT MAX(position) as m FROM playlist_groups WHERE parent_id IS NULL")
+                .fetch_one(&self.pool)
+                .await?
+        };
+        Ok(row.get::<Option<f64>, _>("m").unwrap_or(-1.0) + 1.0)
+    }
+
+    /// Return all playlists ordered by position then name.
     pub async fn list_playlists(&self) -> Result<Vec<Playlist>> {
-        let rows = sqlx::query("SELECT id, name FROM playlists ORDER BY name")
+        let rows = sqlx::query("SELECT id, name, group_id, position FROM playlists ORDER BY position, name")
             .fetch_all(&self.pool)
             .await
             .context("list_playlists failed")?;
-        Ok(rows.iter().map(|r| Playlist { id: r.get("id"), name: r.get("name") }).collect())
+        Ok(rows.iter().map(row_to_playlist).collect())
+    }
+
+    /// Rename a playlist. Returns true if a row was modified.
+    pub async fn rename_playlist(&self, id: i64, name: &str) -> Result<bool> {
+        let affected = sqlx::query("UPDATE playlists SET name = ? WHERE id = ?")
+            .bind(name)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .context("rename_playlist failed")?
+            .rows_affected();
+        Ok(affected > 0)
     }
 
     /// Delete a playlist by ID. Returns true if a row was removed.
@@ -467,6 +542,197 @@ impl Db {
             .context("delete_playlist failed")?
             .rows_affected();
         Ok(affected > 0)
+    }
+
+    /// Move a playlist to a different group (or root), inserting before the
+    /// sibling at `before_index` (0-based among sorted siblings, or append if
+    /// before_index >= sibling count). Uses fractional positioning — only one row updated.
+    pub async fn move_playlist(&self, playlist_id: i64, new_group_id: Option<i64>, before_index: usize) -> Result<()> {
+        // Fetch siblings in the destination group, excluding the playlist being moved.
+        let sibling_positions: Vec<f64> = if let Some(gid) = new_group_id {
+            sqlx::query(
+                "SELECT position FROM playlists WHERE group_id = ? AND id != ? ORDER BY position",
+            )
+            .bind(gid)
+            .bind(playlist_id)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT position FROM playlists WHERE group_id IS NULL AND id != ? ORDER BY position",
+            )
+            .bind(playlist_id)
+            .fetch_all(&self.pool)
+            .await?
+        }
+        .iter()
+        .map(|r| r.get::<f64, _>("position"))
+        .collect();
+
+        let new_pos = fractional_position(&sibling_positions, before_index);
+
+        sqlx::query("UPDATE playlists SET group_id = ?, position = ? WHERE id = ?")
+            .bind(new_group_id)
+            .bind(new_pos)
+            .bind(playlist_id)
+            .execute(&self.pool)
+            .await
+            .context("move_playlist failed")?;
+        Ok(())
+    }
+
+    // ── Playlist Groups ───────────────────────────────────────────────────────
+
+    /// Create a new playlist group, appended at the end of its parent (or root).
+    pub async fn insert_playlist_group(&self, name: &str, parent_id: Option<i64>) -> Result<PlaylistGroup> {
+        let position = self.next_group_position(parent_id).await?;
+        let id: i64 = sqlx::query("INSERT INTO playlist_groups (name, parent_id, position) VALUES (?, ?, ?)")
+            .bind(name)
+            .bind(parent_id)
+            .bind(position)
+            .execute(&self.pool)
+            .await
+            .context("insert_playlist_group failed")?
+            .last_insert_rowid();
+        Ok(PlaylistGroup { id, name: name.to_owned(), parent_id, position })
+    }
+
+    /// Return all playlist groups ordered by position.
+    pub async fn list_playlist_groups(&self) -> Result<Vec<PlaylistGroup>> {
+        let rows = sqlx::query("SELECT id, name, parent_id, position FROM playlist_groups ORDER BY position")
+            .fetch_all(&self.pool)
+            .await
+            .context("list_playlist_groups failed")?;
+        Ok(rows.iter().map(|r| PlaylistGroup {
+            id:        r.get("id"),
+            name:      r.get("name"),
+            parent_id: r.get("parent_id"),
+            position:  r.get::<f64, _>("position"),
+        }).collect())
+    }
+
+    /// Rename a playlist group. Returns true if a row was modified.
+    pub async fn rename_playlist_group(&self, id: i64, name: &str) -> Result<bool> {
+        let affected = sqlx::query("UPDATE playlist_groups SET name = ? WHERE id = ?")
+            .bind(name)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .context("rename_playlist_group failed")?
+            .rows_affected();
+        Ok(affected > 0)
+    }
+
+    /// Delete a playlist group by ID. Returns true if a row was removed.
+    /// Child groups are cascade-deleted; playlists in the group get group_id = NULL (moved to root).
+    pub async fn delete_playlist_group(&self, id: i64) -> Result<bool> {
+        let affected = sqlx::query("DELETE FROM playlist_groups WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .context("delete_playlist_group failed")?
+            .rows_affected();
+        Ok(affected > 0)
+    }
+
+    /// Move a playlist group to a different parent, inserting before sibling at
+    /// `before_index`. Returns an error if the move would create a cycle.
+    /// Uses fractional positioning — only one row updated.
+    pub async fn move_playlist_group(&self, group_id: i64, new_parent_id: Option<i64>, before_index: usize) -> Result<()> {
+        // Cycle check: walk ancestors of new_parent_id and reject if group_id appears.
+        if let Some(pid) = new_parent_id {
+            let all_groups = self.list_playlist_groups().await?;
+            let mut cursor = Some(pid);
+            while let Some(cur) = cursor {
+                if cur == group_id {
+                    anyhow::bail!("move_playlist_group: would create a cycle");
+                }
+                cursor = all_groups.iter().find(|g| g.id == cur).and_then(|g| g.parent_id);
+            }
+        }
+
+        // Sibling positions in the destination parent, excluding the group being moved.
+        let sibling_positions: Vec<f64> = if let Some(pid) = new_parent_id {
+            sqlx::query(
+                "SELECT position FROM playlist_groups WHERE parent_id = ? AND id != ? ORDER BY position",
+            )
+            .bind(pid)
+            .bind(group_id)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT position FROM playlist_groups WHERE parent_id IS NULL AND id != ? ORDER BY position",
+            )
+            .bind(group_id)
+            .fetch_all(&self.pool)
+            .await?
+        }
+        .iter()
+        .map(|r| r.get::<f64, _>("position"))
+        .collect();
+
+        let new_pos = fractional_position(&sibling_positions, before_index);
+
+        sqlx::query("UPDATE playlist_groups SET parent_id = ?, position = ? WHERE id = ?")
+            .bind(new_parent_id)
+            .bind(new_pos)
+            .bind(group_id)
+            .execute(&self.pool)
+            .await
+            .context("move_playlist_group failed")?;
+        Ok(())
+    }
+
+    /// Return all tracks in all playlists within a group subtree (recursive).
+    pub async fn list_tracks_in_group(&self, group_id: i64) -> Result<Vec<Track>> {
+        let rows = sqlx::query(
+            r#"WITH RECURSIVE subtree(id) AS (
+                   SELECT id FROM playlist_groups WHERE id = ?
+                   UNION ALL
+                   SELECT g.id FROM playlist_groups g JOIN subtree s ON g.parent_id = s.id
+               )
+               SELECT DISTINCT t.id, t.path, t.title, t.artist, t.album, t.duration_secs, t.bpm
+               FROM tracks t
+               JOIN playlist_tracks pt ON pt.track_id = t.id
+               JOIN playlists p ON p.id = pt.playlist_id
+               WHERE p.group_id IN (SELECT id FROM subtree)
+               ORDER BY t.id"#,
+        )
+        .bind(group_id)
+        .fetch_all(&self.pool)
+        .await
+        .context("list_tracks_in_group failed")?;
+        Ok(rows.iter().map(row_to_track).collect())
+    }
+
+    /// Return tracks in a group subtree, filtered by title/artist/album.
+    pub async fn list_tracks_in_group_filtered(&self, group_id: i64, needle: &str) -> Result<Vec<Track>> {
+        let pattern = format!("%{}%", needle);
+        let rows = sqlx::query(
+            r#"WITH RECURSIVE subtree(id) AS (
+                   SELECT id FROM playlist_groups WHERE id = ?
+                   UNION ALL
+                   SELECT g.id FROM playlist_groups g JOIN subtree s ON g.parent_id = s.id
+               )
+               SELECT DISTINCT t.id, t.path, t.title, t.artist, t.album, t.duration_secs, t.bpm
+               FROM tracks t
+               JOIN playlist_tracks pt ON pt.track_id = t.id
+               JOIN playlists p ON p.id = pt.playlist_id
+               WHERE p.group_id IN (SELECT id FROM subtree)
+                 AND (LOWER(COALESCE(t.title,  '')) LIKE LOWER(?)
+                   OR LOWER(COALESCE(t.artist, '')) LIKE LOWER(?)
+                   OR LOWER(COALESCE(t.album,  '')) LIKE LOWER(?))
+               ORDER BY t.id"#,
+        )
+        .bind(group_id)
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind(&pattern)
+        .fetch_all(&self.pool)
+        .await
+        .context("list_tracks_in_group_filtered failed")?;
+        Ok(rows.iter().map(row_to_track).collect())
     }
 
     /// Add a track to a playlist. Idempotent (ignores duplicate).
@@ -694,7 +960,7 @@ impl Db {
     /// Return playlists that contain the given track, ordered by name.
     pub async fn list_playlists_for_track(&self, track_id: i64) -> Result<Vec<Playlist>> {
         let rows = sqlx::query(
-            r#"SELECT p.id, p.name FROM playlists p
+            r#"SELECT p.id, p.name, p.group_id, p.position FROM playlists p
                JOIN playlist_tracks pt ON pt.playlist_id = p.id
                WHERE pt.track_id = ?
                ORDER BY p.name"#,
@@ -703,7 +969,7 @@ impl Db {
         .fetch_all(&self.pool)
         .await
         .context("list_playlists_for_track failed")?;
-        Ok(rows.iter().map(|r| Playlist { id: r.get("id"), name: r.get("name") }).collect())
+        Ok(rows.iter().map(row_to_playlist).collect())
     }
 
     // ── Settings ──────────────────────────────────────────────────────────────
@@ -971,8 +1237,8 @@ mod tests {
     async fn list_playlists_for_track_test() {
         let db = setup().await;
         let t = db.insert_track(&new_track("/music/playlist-track.mp3")).await.unwrap();
-        let p1 = db.insert_playlist("Alpha").await.unwrap();
-        let p2 = db.insert_playlist("Beta").await.unwrap();
+        let p1 = db.insert_playlist("Alpha", None).await.unwrap();
+        let p2 = db.insert_playlist("Beta", None).await.unwrap();
         db.add_track_to_playlist(t.id, p1.id).await.unwrap();
         db.add_track_to_playlist(t.id, p2.id).await.unwrap();
         let pls = db.list_playlists_for_track(t.id).await.unwrap();
@@ -990,7 +1256,7 @@ mod tests {
         let t1 = db.insert_track(&new_track("/music/a.mp3")).await.unwrap();
         let t2 = db.insert_track(&new_track("/music/b.mp3")).await.unwrap();
         let t3 = db.insert_track(&new_track("/music/c.mp3")).await.unwrap();
-        let pl = db.insert_playlist("reorder-test").await.unwrap();
+        let pl = db.insert_playlist("reorder-test", None).await.unwrap();
         db.add_track_to_playlist(t1.id, pl.id).await.unwrap();
         db.add_track_to_playlist(t2.id, pl.id).await.unwrap();
         db.add_track_to_playlist(t3.id, pl.id).await.unwrap();

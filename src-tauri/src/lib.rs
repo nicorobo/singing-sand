@@ -21,7 +21,15 @@ use analysis::AnalysisQueue;
 use commands::{
     directories::{add_directory, add_directory_path, emit_dir_tree, remove_scanned_dir, toggle_dir_expanded},
     library::{get_sidebar_data, nav_all, nav_playlist, nav_select_dir, nav_tag, search_tracks},
-    playlists::{add_selected_to_playlist, add_to_playlist, create_playlist, delete_playlist, remove_from_playlist, reorder_playlist_tracks},
+    playlists::{
+        add_selected_to_playlist, add_to_playlist,
+        create_playlist, create_playlist_group,
+        delete_playlist, delete_playlist_group,
+        move_playlist_node,
+        nav_group,
+        remove_from_playlist, reorder_playlist_tracks,
+        rename_playlist, rename_playlist_group,
+    },
     settings::{get_settings, update_waveform_setting},
     tags::{create_tag, delete_tag, toggle_tag_for_selection, update_tag},
     tracks::{expand_track, remove_tag_from_expanded, save_notes, track_clicked},
@@ -89,9 +97,12 @@ pub fn run() {
     };
 
     let rt_handle = rt.handle().clone();
+    let rt_handle_art = rt.handle().clone();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
+            let _rt_guard = rt_handle.enter();
             let app_handle = app.handle().clone();
 
             // Analysis queue needs AppHandle — created after setup so we have the handle.
@@ -149,10 +160,10 @@ pub fn run() {
             app.manage(state);
             Ok(())
         })
-        .register_asynchronous_uri_scheme_protocol("art", |ctx, request, responder| {
+        .register_asynchronous_uri_scheme_protocol("art", move |ctx, request, responder| {
             let app = ctx.app_handle().clone();
             let url = request.uri().to_string();
-            tokio::spawn(async move {
+            rt_handle_art.spawn(async move {
                 let response = serve_art(&app, &url).await;
                 responder.respond(response);
             });
@@ -186,6 +197,12 @@ pub fn run() {
             toggle_tag_for_selection,
             create_playlist,
             delete_playlist,
+            rename_playlist,
+            create_playlist_group,
+            delete_playlist_group,
+            rename_playlist_group,
+            move_playlist_node,
+            nav_group,
             add_to_playlist,
             remove_from_playlist,
             reorder_playlist_tracks,

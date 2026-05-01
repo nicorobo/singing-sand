@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { usePlayerStore } from "../stores/playerStore";
 import { useUiStore } from "../stores/uiStore";
 import { useSidebarStore } from "../stores/sidebarStore";
-import { DirTreeItemDto, PlaylistDto, TagDto } from "../types";
+import { DirTreeItemDto, SidebarPlaylistDataDto, TagDto } from "../types";
 
 export function useTauriEvents(onLibraryChanged: () => void) {
   const setPosition = usePlayerStore((s) => s.setPosition);
@@ -14,14 +14,14 @@ export function useTauriEvents(onLibraryChanged: () => void) {
   const setDuplicateMessage = useUiStore((s) => s.setDuplicateMessage);
   const setDirs = useSidebarStore((s) => s.setDirs);
   const setPlaylists = useSidebarStore((s) => s.setPlaylists);
+  const setGroups = useSidebarStore((s) => s.setGroups);
   const setTags = useSidebarStore((s) => s.setTags);
 
   useEffect(() => {
     const unlisten: Array<() => void> = [];
 
-    listen<{ position: number; duration: number }>("position-changed", (e) => {
+    listen<{ position: number }>("position-changed", (e) => {
       setPosition(e.payload.position);
-      setDuration(e.payload.duration);
     }).then((fn) => unlisten.push(fn));
 
     listen<Record<string, never>>("track-finished", () => {
@@ -45,8 +45,9 @@ export function useTauriEvents(onLibraryChanged: () => void) {
       setDirs(e.payload);
     }).then((fn) => unlisten.push(fn));
 
-    listen<PlaylistDto[]>("sidebar-playlists-updated", (e) => {
-      setPlaylists(e.payload);
+    listen<SidebarPlaylistDataDto>("sidebar-playlists-updated", (e) => {
+      setPlaylists(e.payload.playlists);
+      setGroups(e.payload.groups);
     }).then((fn) => unlisten.push(fn));
 
     listen<TagDto[]>("sidebar-tags-updated", (e) => {
@@ -65,5 +66,5 @@ export function useTauriEvents(onLibraryChanged: () => void) {
       unlisten.forEach((fn) => fn());
     };
   }, [setPosition, setDuration, setIsPlaying, setCurrentTrack,
-      setPendingAnalysisCount, setDuplicateMessage, setDirs, setPlaylists, setTags, onLibraryChanged]);
+      setPendingAnalysisCount, setDuplicateMessage, setDirs, setPlaylists, setGroups, setTags, onLibraryChanged]);
 }

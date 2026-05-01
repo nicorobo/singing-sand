@@ -17,8 +17,8 @@ export function TagAssignmentPanel() {
   const handleToggle = async (tag: SelectedTagDto) => {
     try {
       const updated = await invoke<SelectedTagDto[]>("toggle_tag_for_selection", {
-        tag_id: tag.id,
-        sel_ids: Array.from(selectedIds),
+        tagId: tag.id,
+        selIds: Array.from(selectedIds),
       });
       setTagItems(updated);
     } catch (err) {

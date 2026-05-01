@@ -130,6 +130,43 @@
 
 // ─── Playlists ───────────────────────────────────────────────────────────────
 
+.sectionHeaderBtns {
+  display: flex;
+  gap: 2px;
+}
+
+.groupNode {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px 4px 4px;
+  cursor: pointer;
+  color: $subtext1;
+  font-size: 12px;
+  border-radius: 4px;
+  margin: 0 4px;
+  gap: 3px;
+  font-weight: 500;
+
+  &:hover {
+    background: $surface0;
+    color: $text;
+
+    .deletePlaylist {
+      opacity: 1;
+    }
+  }
+
+  &.active {
+    background: $surface0;
+    color: $blue;
+  }
+}
+
+.groupIcon {
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
 .playlistItem {
   display: flex;
   align-items: center;

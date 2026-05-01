@@ -19,7 +19,7 @@ export function Waveform() {
     const w = Math.max(1, Math.round(width));
     const h = Math.max(1, Math.round(height));
     try {
-      const result = await invoke("get_waveform", { track_id: trackId, width: w, height: h });
+      const result = await invoke("get_waveform", { trackId, width: w, height: h });
       const bytes = new Uint8Array(result as ArrayBuffer);
       const blob = new Blob([bytes], { type: "image/png" });
       if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
